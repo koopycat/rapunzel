@@ -43,7 +43,7 @@ ENTRYPOINT ["/usr/local/bin/rapunzel-entrypoint"]
 FROM base AS claude
 
 ARG CLAUDE_PACKAGE=@anthropic-ai/claude-code
-ARG CLAUDE_VERSION=2.1.289
+ARG CLAUDE_VERSION=2.1.296
 
 # The package ships a placeholder binary and a postinstall that links in the
 # platform's native one from an optional dependency. --ignore-scripts keeps
@@ -71,7 +71,7 @@ CMD ["claude"]
 FROM base AS codex
 
 ARG CODEX_PACKAGE=@openai/codex
-ARG CODEX_VERSION=0.160.0
+ARG CODEX_VERSION=0.162.1
 
 # The interactive CLI manages a background app-server with ps.
 RUN apt-get update \
@@ -127,7 +127,7 @@ CMD ["dsh", "headless", "--help"]
 FROM base AS opencode
 
 ARG OPENCODE_PACKAGE=opencode-ai
-ARG OPENCODE_VERSION=1.18.34
+ARG OPENCODE_VERSION=1.19.0
 
 # Like Claude Code: a placeholder binary and a postinstall that links in the
 # platform's native one from an optional dependency, so run only that script.
