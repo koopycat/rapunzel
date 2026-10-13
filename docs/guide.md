@@ -146,9 +146,9 @@ The container maps the caller's arbitrary UID/GID to the name `agent` (via libns
 
 ## What pi needs at runtime
 
-The image includes Node.js 24, bash, CA certificates, git, ripgrep, and the globally installed pi package.
-These match pi's official Plain Docker example.
-The image deliberately does not include Python, jq, curl, compilers, or language-specific build toolchains.
+All harness images share a base with Node.js 24, bash, CA certificates, git, curl, ripgrep, jq, less, zip, unzip, and process tools from procps (such as ps and top).
+The pi image adds the globally installed pi package.
+The image deliberately does not include Python, compilers, or language-specific build toolchains.
 Install project-specific tools in a project image or extend this Dockerfile when a project genuinely needs them.
 
 Pi's runtime state is under `PI_CODING_AGENT_DIR`, set here to `/home/agent/.pi/agent`:

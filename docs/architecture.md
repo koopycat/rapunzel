@@ -80,7 +80,7 @@ flowchart LR
 | Component | Role | Source |
 |---|---|---|
 | `rapunzel` | Launcher on the host. Builds the `docker run` command, filters the environment, sets up egress, reports host-file changes, resets the terminal. | `rapunzel`, `lib/*.sh` |
-| Image | Debian slim with Node 24, git, ripgrep, and the pi harness. Built from this repository and published to `ghcr.io/koopycat/rapunzel`. | `Dockerfile` |
+| Image | Shared Debian slim base with Node 24, bash, CA certificates, git, curl, ripgrep, jq, less, zip, unzip, and procps, plus the selected harness. The pi image is built from this repository and published to `ghcr.io/koopycat/rapunzel`. | `Dockerfile` |
 | Entrypoint | Maps the caller's UID to the name `agent`, writes pi's configuration, then runs the requested command. | `bootstrap.sh`, `setup-identity.sh`, `profiles/<harness>/bootstrap.mjs` |
 | Agent volume | Docker named volume per project, mounted at `/home/agent/.pi/agent`. | `lib/volumes.sh` |
 | Egress sidecar | Pipelock (allowlist mode) or Caddy (strict mode), created per run. | `lib/egress.sh` |

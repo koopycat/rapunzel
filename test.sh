@@ -87,11 +87,21 @@ if [[ "$H_NAME" == pi ]]; then
         exit 1
     }
 
-    # The platform pruning in the Dockerfile must keep this platform's esbuild binary.
+    # Exercise pi's TypeScript loader after dependency installation and pruning.
     run node -e '
         const { createRequire } = require("node:module");
-        const require_ = createRequire("/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/package.json");
-        require_("esbuild").transformSync("let x: number = 1", { loader: "ts" });
+        const fs = require("node:fs"), path = require("node:path");
+        const piPackage = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/package.json";
+        const { createJiti } = createRequire(piPackage)("jiti");
+        const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "rapunzel-typescript-"));
+        const file = path.join(dir, "probe.ts");
+        fs.writeFileSync(file, "const value: number = 42; export default value;");
+        createJiti(piPackage).import(file).then((mod) => {
+            if (mod.default !== 42) throw new Error("TypeScript module did not return 42");
+        }).finally(() => fs.rmSync(dir, { recursive: true, force: true })).catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+        });
     '
 fi
 

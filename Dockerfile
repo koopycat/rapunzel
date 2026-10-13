@@ -10,9 +10,15 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
+        curl \
         git \
+        jq \
+        less \
         libnss-wrapper \
+        procps \
         ripgrep \
+        unzip \
+        zip \
     && rm -rf /var/lib/apt/lists/* \
     && nss_wrapper_so=$(dpkg-query -L libnss-wrapper | grep -E '/libnss_wrapper\.so$' | head -n1) \
     && ln -sf "$nss_wrapper_so" /usr/local/lib/libnss_wrapper.so \
@@ -72,11 +78,6 @@ FROM base AS codex
 
 ARG CODEX_PACKAGE=@openai/codex
 ARG CODEX_VERSION=0.162.1
-
-# The interactive CLI manages a background app-server with ps.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends procps \
-    && rm -rf /var/lib/apt/lists/*
 
 # bin/codex.js resolves the platform's native binary from an optional
 # dependency at run time, so no install script is needed.
