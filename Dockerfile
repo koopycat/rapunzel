@@ -168,7 +168,7 @@ CMD ["opencode"]
 FROM base AS pi
 
 ARG PI_PACKAGE=@earendil-works/pi-coding-agent
-ARG PI_VERSION=1.1.0
+ARG PI_VERSION=1.2.0
 
 # Separate layer so pi upgrades do not re-run apt and vice versa. Pruning must
 # happen in this same layer, or the foreign-platform binaries stay in the image.
