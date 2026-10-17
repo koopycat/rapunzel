@@ -610,6 +610,48 @@ A model router or gateway on your local network, for example `router.lan` at `10
 It takes exact names only, no wildcards: whoever controls a name's DNS decides where it points, so list only names whose DNS you control.
 Cloud metadata and link-local addresses stay blocked regardless.
 
+### Runtime egress control
+
+The launcher prints a 24-character run ID and labels the agent, sidecar, and networks with it. `jq` is required on the host. Use another host terminal; the controller never reads the harness TUI's stdin:
+
+```bash
+rapunzel-ctl runs
+rapunzel-ctl inspect RUN_ID_OR_PREFIX
+rapunzel-ctl config /path/to/project --harness opencode
+rapunzel-ctl egress show RUN_ID
+rapunzel-ctl egress pending RUN_ID
+rapunzel-ctl egress watch RUN_ID
+rapunzel-ctl egress allow RUN_ID registry.npmjs.org
+rapunzel-ctl egress revoke RUN_ID registry.npmjs.org
+rapunzel-ctl --json inspect RUN_ID       # explicit machine-readable output
+rapunzel-ctl --format=text runs          # text even when redirected
+```
+
+Commands print readable text on a terminal and JSON otherwise. Put `--json` or `--format=text|json|auto` before the command to override this; PTY-based automation should explicitly use `--json`. JSON and text both ASCII-escape untrusted destinations and paths. Progress goes to terminal stderr, never into JSON stdout. `config` (also `rapunzel --config PROJECT`, which always returns JSON) explains the startup allowlist and credential presence without contacting Docker, building images, starting containers, or printing credential values. It uses the launcher's own policy construction. Egress-control variables keep their existing host-environment semantics; naming one in a provider env file does not make it effective.
+
+Every run selector accepts a unique **8–24-character lowercase hex prefix** from this user's registry. Ambiguous prefixes are refused, including collisions with stale or foreign-daemon records; use a full ID in that case. Selection freezes the full ID and mutations revalidate it under the update lock. Commands never choose the newest run, infer a project from the working directory, or switch runs after one exits.
+
+`pending` groups blocked events from at most the last 2,000 retained sidecar log lines by hostname (the grant's scope), with observed ports, event counts, first/last observed timestamps, and current startup/runtime coverage. JSON is a `schemaVersion:1` object with `destinations`, not a stream of raw events. Counts are observed **log events**, not exact application attempts. It is diagnostic history, **not** a durable pending-approval queue; covered hosts remain visible but are no longer approval candidates. Coverage is a metadata snapshot, not proof that a retry succeeded. Updating/uncertain policy is marked unknown. A failed log read returns an error, not an empty snapshot.
+
+`watch` remains a sanitized event stream with the same bounded history followed by new events. Ordinary allowlist gaps with valid exact DNS targets are marked as approval candidates; TLS/SNI violations and address/DNS protection events are not ordinary host-approval requests. A grouped host with mixed security failures is diagnostic-only. Private startup exceptions are shown separately and never inferred from host-side DNS. No arbitrary raw log messages, headers, or URL paths are printed. This is not a complete connectivity diagnostic: some upstream connection failures have no matching block event.
+
+Runtime grants:
+
+- Apply only to the selected running `allowlist` session. Use its full ID or unique prefix. Mutations must run on the originating host and selected Docker daemon.
+- Take exact DNS host names, not URLs, IP literals, ports, or wildcards. They add reachability but **never** expand private-address trust. A granted host that resolves privately stays blocked unless startup configuration already trusted it.
+- Last until revoked or the run ends. There is no permanent approval, expiry, “allow once,” or prompt that holds the original connection. After approval, retry the tool/command.
+- Revoke only controller-added grants. Startup allowances and their wildcard coverage cannot be overridden. Existing CONNECT tunnels are not terminated; revocation controls new admission only.
+- Permit sending data as well as fetching it. HTTPS request methods, paths, and bodies remain opaque; this is not a read-only registry/GitHub policy.
+- Leave `strict` mode and Caddy's credential gateway unchanged.
+
+The controller stages a candidate in the sidecar-only config volume, validates its normalized hash with the same immutable Pipelock image on `--network none`, replaces the live file atomically using a short-lived networkless helper based on the running agent's immutable image ID, and requests reload. It reports success only after a fresh successful reload event carries the expected configuration hash. Concurrent mutations are refused by a per-run host lock and may be retried. No control port is published, no host bind mount is added, and no Docker socket or controller credentials enter the agent.
+
+Host-only run metadata lives under `${XDG_STATE_HOME:-$HOME/.local/state}/rapunzel/runs` by default, or `RAPUNZEL_RUNS_DIR`. This directory must belong to the caller, be mode `700`, and be outside the mounted project. Selecting an ancestor such as the host home as the project can violate that rule; choose a narrower project or put the registry outside it. Ordinary exit removes the run record and its per-run operator audit. A killed launcher can leave stale metadata; discovery lists only this registry's live Docker agents on the selected daemon, not arbitrary labeled containers or stale records. The launcher never sources metadata as shell code. The startup run hint appears just before the agent is created; a command issued immediately may report not ready/no longer active. Retry after the sandbox starts, without selecting a different run.
+
+An invalid candidate leaves the live policy unchanged. If reload cannot be confirmed, the controller tries to restore the previous config; if that also cannot be confirmed it attempts to stop the egress sidecar and verifies that it stopped. A catchable interrupted update similarly shuts down uncertain egress. If Docker is unavailable and shutdown cannot be confirmed, the error explicitly says so: stop/restart the run before continuing. `inspect` marks uncertainty, and further mutations are refused. A temporary expanded policy may have admitted tunnels before rollback; a successful rollback does not close those tunnels. A nonzero exit (including a broken output pipe after commit) does not guarantee nothing changed: inspect before retrying.
+
+Accepted-generation evidence uses all retained logs, independent of the bounded diagnostic window. If log rotation removes all accepted-generation evidence, updates are safely refused and the run needs restarting. The controller itself owns the update and signal cleanup, including when only its PID receives TERM/HUP; a foreground Docker call may finish before Bash handles the signal. An updater killed with `SIGKILL` can leave the lock and candidate state behind before cleanup; there is no supervising daemon to recover that automatically. Do not delete the lock and guess which policy is active—restart the run. These are operator/process-failure limits, not an agent-accessible approval path.
+
 ### strict mode
 
 ```bash

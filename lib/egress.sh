@@ -36,6 +36,7 @@ EGRESS_OUTBOUND=""
 EGRESS_SIDECAR=""
 EGRESS_HOSTS=()
 EGRESS_PRIVATE_HOSTS=()
+EGRESS_LIB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 GATEWAY_PROVIDERS=""
 GATEWAY_CUSTOM=false
 
@@ -73,7 +74,7 @@ egress_sweep_stale() {
 
 egress_networks_create() {
     local run_id
-    run_id="$(date +%s)-$$-${RANDOM}"
+    run_id=${RUN_ID:-$(date +%s)-$$-${RANDOM}}
     egress_sweep_stale
 
     # Isolated gateway mode (Docker Engine 28+) leaves the bridge without a
@@ -83,6 +84,7 @@ egress_networks_create() {
         --opt com.docker.network.bridge.gateway_mode_ipv4=isolated \
         --opt com.docker.network.bridge.gateway_mode_ipv6=isolated \
         --label rapunzel.egress=1 \
+        --label "rapunzel.run=${run_id}" \
         --label "rapunzel.owner=${EGRESS_OWNER}" \
         "$EGRESS_NETWORK" >/dev/null; then
         EGRESS_NETWORK=""
@@ -94,6 +96,7 @@ egress_networks_create() {
     if ! docker network create \
         --opt com.docker.network.bridge.enable_icc=false \
         --label rapunzel.egress=1 \
+        --label "rapunzel.run=${run_id}" \
         --label "rapunzel.owner=${EGRESS_OWNER}" \
         "$EGRESS_OUTBOUND" >/dev/null; then
         EGRESS_OUTBOUND=""
@@ -104,12 +107,16 @@ egress_networks_create() {
 }
 
 # Add one allowlist entry after checking it is a plain DNS name.
+egress_valid_host() {
+    jq -en -L "$EGRESS_LIB_DIR" --arg host "$1" 'include "control"; $host | valid_host(true)' >/dev/null
+}
+
 egress_allow_host() {
     local host
     host=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     [[ -n "$host" ]] || return 0
-    if [[ ! "$host" =~ ^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]([a-z0-9-]*[a-z0-9])?$ ]]; then
-        printf 'rapunzel: not an allowable host name: %s\n' "$1" >&2
+    if ! egress_valid_host "$host"; then
+        printf 'rapunzel: not an allowable DNS host name (value redacted; labels max 63, name max 253 characters)\n' >&2
         return 1
     fi
     local known
@@ -125,7 +132,7 @@ egress_allow_host() {
 # names: whoever controls a name's DNS decides where it points.
 egress_allow_private_host() {
     if [[ "$1" == *'*'* ]]; then
-        printf 'rapunzel: RAPUNZEL_EGRESS_ALLOW_PRIVATE takes exact host names, not wildcards: %s\n' "$1" >&2
+        printf 'rapunzel: RAPUNZEL_EGRESS_ALLOW_PRIVATE takes exact host names, not wildcards (value redacted)\n' >&2
         return 1
     fi
     egress_allow_host "$1" || return 1
@@ -159,8 +166,7 @@ egress_allow_login() {
 # Print the host of an http(s) URL, or fail.
 url_host() {
     if [[ ! "$1" =~ ^https?://([^/?#:@[:space:]]+)(:[0-9]+)?(/[^?#[:space:]]*)?$ ]]; then
-        printf 'rapunzel: RAPUNZEL_API_BASE_URL is not an http(s) URL without credentials, query or fragment: %s\n' \
-            "$1" >&2
+        printf 'rapunzel: RAPUNZEL_API_BASE_URL is not an http(s) URL without credentials, query or fragment (value redacted)\n' >&2
         return 1
     fi
     printf '%s' "${BASH_REMATCH[1]}"
@@ -212,6 +218,9 @@ allowlist_configure() {
 
 allowlist_start() {
     local dir=${1:?allowlist_start requires a directory}
+    # Host metadata uses umask 077; this secret-free file is read by the
+    # sidecar's different UID after docker cp into its private volume.
+    chmod 644 "${dir}/pipelock.yaml"
     # The image has no shell, and a read-only root refuses docker cp, so the
     # config goes into an anonymous volume before the container starts.
     docker create \
@@ -219,6 +228,8 @@ allowlist_start() {
         --label rapunzel.egress=1 \
         --label "rapunzel.owner=${EGRESS_OWNER}" \
         --network "$EGRESS_NETWORK" \
+        --label "rapunzel.run=${RUN_ID:-}" \
+        --label rapunzel.role=egress \
         --network-alias "$EGRESS_PROXY_ALIAS" \
         --user 65532:65532 \
         --read-only \
@@ -333,6 +344,8 @@ gateway_start() {
         --label rapunzel.egress=1 \
         --label "rapunzel.owner=${EGRESS_OWNER}" \
         --network "$EGRESS_NETWORK" \
+        --label "rapunzel.run=${RUN_ID:-}" \
+        --label rapunzel.role=egress \
         --network-alias "$GATEWAY_ALIAS" \
         --user 65534:65534 \
         --read-only \

@@ -19,6 +19,10 @@ source "${SCRIPT_DIR}/lib/egress.sh"
 source "${SCRIPT_DIR}/lib/host-files.sh"
 # shellcheck source=lib/profile.sh
 source "${SCRIPT_DIR}/lib/profile.sh"
+# shellcheck source=lib/policy.sh
+source "${SCRIPT_DIR}/lib/policy.sh"
+# shellcheck source=lib/runs.sh
+source "${SCRIPT_DIR}/lib/runs.sh"
 
 usage() {
     cat >&2 <<'EOF'
@@ -36,6 +40,7 @@ Options:
   --harness NAME          Harness profile to run (default: pi, see profiles/)
   --shell                 Open an interactive bash with the same mounts and env.
   --exec                  Run COMMAND instead of the harness, with the same mounts and env.
+  --config                Print redacted effective configuration without starting Docker.
   -h, --help              Show this help.
 
 Environment:
@@ -47,6 +52,7 @@ Environment:
                           set it empty to use none)
   RAPUNZEL_NETWORK        Docker network mode (default: bridge)
   RAPUNZEL_EGRESS         open (default), allowlist, or strict (docs/egress.md)
+  RAPUNZEL_RUNS_DIR       Host-only metadata (default ~/.local/state/rapunzel/runs)
   RAPUNZEL_PORT           Host port for a harness web UI, on 127.0.0.1 (dsh)
   RAPUNZEL_EGRESS_ALLOW   Extra hosts for allowlist mode, comma-separated
   RAPUNZEL_EGRESS_LOGINS  /login providers for allowlist mode, comma-separated:
@@ -76,6 +82,7 @@ load_profile "$HARNESS" || exit 2
 
 SHELL_MODE=false
 EXEC_MODE=false
+CONFIG_MODE=false
 case "${1:-}" in
     -h | --help) usage 0 ;;
     --shell)
@@ -86,6 +93,10 @@ case "${1:-}" in
         EXEC_MODE=true
         shift
         [[ $# -ge 2 ]] || usage
+        ;;
+    --config)
+        CONFIG_MODE=true
+        shift
         ;;
 esac
 
@@ -104,6 +115,10 @@ if [[ ! -d "$PROJECT_INPUT" ]]; then
 fi
 if [[ "$SHELL_MODE" == true && $# -gt 0 ]]; then
     printf 'rapunzel: --shell does not accept harness arguments\n' >&2
+    exit 2
+fi
+if [[ "$CONFIG_MODE" == true && $# -gt 0 ]]; then
+    printf 'rapunzel: --config does not accept harness arguments\n' >&2
     exit 2
 fi
 PROJECT_DIR=$(cd -- "$PROJECT_INPUT" && pwd -P)
@@ -167,8 +182,11 @@ if [[ -n "${RAPUNZEL_ENV_FILE:-}" ]]; then
     fi
 fi
 
-require_docker rapunzel
-ensure_image rapunzel "$IMAGE" "$H_NAME" "$SCRIPT_DIR"
+require_jq
+if [[ "$CONFIG_MODE" != true ]]; then
+    require_docker rapunzel
+    ensure_image rapunzel "$IMAGE" "$H_NAME" "$SCRIPT_DIR"
+fi
 
 filtered_env=""
 egress_dir=""
@@ -192,6 +210,7 @@ cleanup() {
     trap '' HUP
     [[ -z "$filtered_env" ]] || rm -f "$filtered_env"
     egress_stop
+    run_forget
     [[ -z "$egress_dir" ]] || rm -rf "$egress_dir"
     restore_terminal
     if [[ -n "$host_files_before" ]]; then
@@ -206,10 +225,19 @@ trap cleanup EXIT
 
 # The named agent volume is created root-owned and mounted with volume-nocopy,
 # so its ownership must be prepared for the invoking UID/GID on every platform.
-prepare_volume_owner
+if [[ "$CONFIG_MODE" != true ]]; then
+    prepare_volume_owner
+    run_register
+fi
 
 args=(
     run --rm --init
+    --name "${RUN_AGENT}"
+    --label "rapunzel.run=${RUN_ID}"
+    --label rapunzel.role=agent
+    --label "rapunzel.project=${PROJECT_DIR}"
+    --label "rapunzel.harness=${H_NAME}"
+    --label "rapunzel.mode=${EGRESS}"
     --user "${RUNTIME_UID}:${RUNTIME_GID}"
     --workdir /workspace
     --security-opt=no-new-privileges
@@ -232,7 +260,7 @@ if [[ "$host_tz" =~ ^:?[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]]; then
 fi
 # Git config and hooks stay read-only, so the harness can commit but cannot plant
 # anything the host's git would run.
-host_files_mounts "$PROJECT_DIR"
+[[ "$CONFIG_MODE" == true ]] || host_files_mounts "$PROJECT_DIR"
 args+=(${HOST_FILE_MOUNTS[@]+"${HOST_FILE_MOUNTS[@]}"})
 
 # Runtime environment policy: only allowlisted names may enter the container.
@@ -358,20 +386,22 @@ if [[ "$EGRESS" == strict ]]; then
 fi
 
 if [[ -n "${RAPUNZEL_ENV_FILE:-}" ]]; then
-    filtered_env=$(mktemp "${TMPDIR:-/tmp}/rapunzel-env.XXXXXX")
-    chmod 600 "$filtered_env"
+    if [[ "$CONFIG_MODE" != true ]]; then
+        filtered_env=$(mktemp "${TMPDIR:-/tmp}/rapunzel-env.XXXXXX")
+        chmod 600 "$filtered_env"
+    fi
     dropped=()
     while IFS= read -r line || [[ -n "$line" ]]; do
         line=${line%$'\r'}
         [[ -z "$line" || "$line" == \#* ]] && continue
         if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-            printf 'rapunzel: ignoring malformed env-file line: %s\n' "$line" >&2
+            printf 'rapunzel: ignoring malformed env-file line (contents redacted)\n' >&2
             continue
         fi
         name=${BASH_REMATCH[1]}
         value=${BASH_REMATCH[2]}
         if env_name_is_allowed "$name"; then
-            printf '%s=%s\n' "$name" "$value" >>"$filtered_env"
+            [[ "$CONFIG_MODE" == true ]] || printf '%s=%s\n' "$name" "$value" >>"$filtered_env"
         elif [[ "$EGRESS" == strict ]] && name_in_list "$name" "${gateway_consumed[@]}"; then
             continue
         elif name_in_list "$name" RAPUNZEL_BASE_URL_VARIABLE RAPUNZEL_API_KEY_VARIABLE \
@@ -387,7 +417,7 @@ if [[ -n "${RAPUNZEL_ENV_FILE:-}" ]]; then
         printf 'rapunzel: warning: dropped %d env-file variable(s) not on the allowlist: %s\n' \
             "${#dropped[@]}" "${dropped[*]}" >&2
     fi
-    args+=(--env-file "$filtered_env")
+    [[ "$CONFIG_MODE" == true ]] || args+=(--env-file "$filtered_env")
 fi
 
 for name in "${env_allowlist[@]}"; do
@@ -403,34 +433,20 @@ if [[ -n "$base_url_variable" && -z "$custom_url" ]]; then
     exit 2
 fi
 base_url_value=$custom_url
+policy_collect
+if [[ "$CONFIG_MODE" == true ]]; then
+    config_report
+    exit
+fi
+policy_json >"${RUN_DIR}/policy.json"
+config_report >"${RUN_DIR}/config.json"
 
 if [[ "$EGRESS" != open ]]; then
     egress_dir=$(mktemp -d "${TMPDIR:-/tmp}/rapunzel-egress.XXXXXX")
     egress_networks_create
     if [[ "$EGRESS" == allowlist ]]; then
-        for host in ${H_EGRESS_HOSTS[@]+"${H_EGRESS_HOSTS[@]}"}; do
-            egress_allow_host "$host"
-        done
-        [[ -z "$(runtime_value ANTHROPIC_API_KEY)" ]] || egress_allow_host api.anthropic.com
-        [[ -z "$(runtime_value OPENAI_API_KEY)" ]] || egress_allow_host api.openai.com
-        if [[ -n "$custom_url" ]]; then
-            custom_host=$(url_host "$custom_url")
-            egress_allow_host "$custom_host"
-        fi
-        # read -a splits without glob expansion, so *.example.com stays literal.
-        IFS=$', \t' read -r -a logins <<<"${RAPUNZEL_EGRESS_LOGINS:-}"
-        for login in ${logins[@]+"${logins[@]}"}; do
-            egress_allow_login "$login"
-        done
-        IFS=$', \t' read -r -a extra_hosts <<<"${RAPUNZEL_EGRESS_ALLOW:-}"
-        for host in ${extra_hosts[@]+"${extra_hosts[@]}"}; do
-            egress_allow_host "$host"
-        done
-        IFS=$', \t' read -r -a private_hosts <<<"${RAPUNZEL_EGRESS_ALLOW_PRIVATE:-}"
-        for host in ${private_hosts[@]+"${private_hosts[@]}"}; do
-            egress_allow_private_host "$host"
-        done
         allowlist_configure "$egress_dir"
+        cp -- "${egress_dir}/pipelock.yaml" "${RUN_DIR}/pipelock.yaml"
         allowlist_start "$egress_dir"
         printf 'rapunzel: egress allowed to %s\n' "${EGRESS_HOSTS[*]}" >&2
         # No HTTP_PROXY: plain http:// requests have no route and fail closed.
@@ -475,6 +491,7 @@ if [[ -n "$base_url_variable" ]]; then
     args+=(--env "${base_url_variable}=${base_url_value}")
 fi
 args+=(--network "$NETWORK")
+run_publish
 
 # Changes to host-executed files are reported when the harness exits.
 host_files_before=$(mktemp "${TMPDIR:-/tmp}/rapunzel-files.XXXXXX")

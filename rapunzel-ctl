@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SCRIPT_PATH=${BASH_SOURCE[0]}
+while [[ -L "$SCRIPT_PATH" ]]; do
+    link=$(readlink -- "$SCRIPT_PATH")
+    [[ "$link" == /* ]] || link="$(dirname -- "$SCRIPT_PATH")/$link"
+    SCRIPT_PATH=$link
+done
+SCRIPT_DIR=$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)
+# shellcheck source=lib/docker.sh
+source "${SCRIPT_DIR}/lib/docker.sh"
+# shellcheck source=lib/egress.sh
+source "${SCRIPT_DIR}/lib/egress.sh"
+# shellcheck source=lib/runs.sh
+source "${SCRIPT_DIR}/lib/runs.sh"
+# shellcheck source=lib/control.sh
+source "${SCRIPT_DIR}/lib/control.sh"
+# shellcheck source=lib/ctl-output.sh
+source "${SCRIPT_DIR}/lib/ctl-output.sh"
+usage() {
+    cat >&2 <<'EOF'
+Usage: rapunzel-ctl [--json|--format=text|json|auto] runs
+       rapunzel-ctl inspect RUN_ID
+       rapunzel-ctl config [PROJECT_DIR] [--harness NAME]
+       rapunzel-ctl egress show|pending|watch RUN_ID
+       rapunzel-ctl egress allow|revoke RUN_ID HOST
+
+Run IDs are printed at startup and by runs. Unique 8+ character prefixes work.
+Output is text on a terminal, JSON otherwise. Global format flags go first.
+pending is a grouped policy-aware snapshot; watch streams sanitized events.
+Runtime grants take exact public host names, last for this run only, and
+require the agent to retry. Revoke removes runtime grants for NEW tunnels;
+startup policy and existing tunnels are not changed. No private exceptions,
+wildcards, expiry, persistent grants, or strict-mode mutations.
+EOF
+    exit "${1:-2}"
+}
+CTL_FORMAT=auto
+case "${1:-}" in
+    --json) CTL_FORMAT=json; shift ;;
+    --format=*) CTL_FORMAT=${1#--format=}; shift ;;
+esac
+case "$CTL_FORMAT" in
+    auto) if [[ -t 1 ]]; then CTL_FORMAT=text; else CTL_FORMAT=json; fi ;;
+    text | json) ;;
+    *) usage ;;
+esac
+[[ $# -gt 0 ]] || usage
+command=$1; shift
+[[ "$command" != -h && "$command" != --help ]] || usage 0
+require_jq
+if [[ "$command" == config ]]; then
+    project=.; harness=${RAPUNZEL_HARNESS:-pi}
+    if [[ $# -gt 0 && "$1" != --harness ]]; then project=$1; shift; fi
+    if [[ "${1:-}" == --harness && $# -eq 2 ]]; then harness=$2; shift 2; fi
+    [[ $# -eq 0 ]] || usage
+    "${SCRIPT_DIR}/rapunzel" --harness "$harness" --config "$project" | ctl_render config
+    exit
+fi
+require_docker rapunzel-ctl
+case "$command" in
+    runs) [[ $# -eq 0 ]] || usage; run_list | ctl_render runs ;;
+    inspect)
+        [[ $# -eq 1 ]] || usage
+        run_select "$1"
+        uncertain=false
+        [[ ! -f "${RUN_DIR}/uncertain" ]] || uncertain=true
+        jq --ascii-output --argjson uncertain "$uncertain" '. + {policyUncertain:$uncertain}' "${RUN_DIR}/run.json" | ctl_render inspect
+        ;;
+    egress)
+        [[ $# -ge 2 ]] || usage
+        action=$1; shift
+        run_select "$1"; shift
+        [[ "$EGRESS" == allowlist ]] || { printf 'rapunzel-ctl: egress controls require an allowlist run\n' >&2; exit 2; }
+        case "$action" in
+            show)
+                [[ $# -eq 0 ]] || usage
+                [[ ! -f "${RUN_DIR}/uncertain" ]] || { printf 'rapunzel-ctl: policy update uncertain; restart this run\n' >&2; exit 1; }
+                jq --ascii-output '.policy + {acceptedHash:.policyHash}' "${RUN_DIR}/run.json" | ctl_render show
+                ;;
+            pending | watch)
+                [[ $# -eq 0 ]] || usage
+                if [[ "$action" == watch ]]; then control_events --follow | ctl_render watch
+                else control_pending | ctl_render pending; fi
+                ;;
+            allow | revoke)
+                [[ $# -eq 1 ]] || usage
+                control_update "$action" "$1"
+                ;;
+            *) usage ;;
+        esac
+        ;;
+    *) usage ;;
+esac
