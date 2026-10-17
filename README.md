@@ -8,7 +8,7 @@ The name: Rapunzel is kept in a tower whose only way out is a single strand you 
 
 ## Quick start
 
-You need Docker Engine or Docker Desktop running. Put this checkout on your `PATH` (or symlink `rapunzel` into a directory on it) and select the published image, for example in `~/.zshrc` or `~/.bashrc`:
+You need Docker Engine or Docker Desktop running, and `jq` on the host (`brew install jq` or your distribution's package manager). Put this checkout on your `PATH` (or symlink `rapunzel` into a directory on it) and select the published image, for example in `~/.zshrc` or `~/.bashrc`:
 
 ```bash
 export PATH="$HOME/src/rapunzel:$PATH"
@@ -106,6 +106,26 @@ Pass any provider key opencode knows (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OP
 opencode has no sandbox of its own and runs tools without asking by default; the container is the boundary. Set `OPENCODE_PERMISSION` (JSON) to require approval, for example `{"bash":"ask","edit":"ask"}`.
 
 ## What stays separate
+
+### Inspect a run and approve a destination
+
+Each launch prints a run ID. In another host terminal:
+
+```bash
+rapunzel-ctl runs
+rapunzel-ctl inspect RUN_ID_OR_PREFIX
+rapunzel-ctl config . --harness pi     # redacted config; does not start Docker
+rapunzel-ctl egress pending RUN_ID     # grouped blocks with current policy coverage
+rapunzel-ctl egress watch RUN_ID       # blocked events, not an approval prompt
+rapunzel-ctl egress allow RUN_ID registry.npmjs.org
+rapunzel-ctl egress revoke RUN_ID registry.npmjs.org
+```
+
+All run selectors accept a unique prefix of at least eight characters. Output is readable text on a terminal and JSON in pipes; put `--json` before the command for explicit machine-readable output. `pending` counts observed block events, not requests waiting for approval.
+
+Runtime grants work in `allowlist` mode only, take exact host names, and last for the current run. The agent retries after approval; the rejected request is not resumed. Private-address protection remains enabled. Revoke removes a runtime grant for **new tunnels**, not an existing connection or a startup allowance. Allowing a host permits uploads as well as downloads. See [runtime egress control](docs/guide.md#runtime-egress-control) for failure handling and limits.
+
+### Isolation
 
 - Each project gets its own persistent Docker volume for the agent's settings, login credentials, sessions, trust decisions, and installed extensions.
 - The selected project is the only host directory mounted into a normal run. Its git config and hooks are read-only, and `rapunzel` reports changes to files the host runs on its own, such as `.envrc` or editor tasks. The host home directory, `~/.pi`, and `~/.ssh` are not mounted.

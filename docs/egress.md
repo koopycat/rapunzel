@@ -270,6 +270,25 @@ A sweep at the next start handles every way a launcher can die, including `SIGKI
 It never touches a run whose PID is alive, even when the PID was reused, nor resources from another host sharing the Docker daemon.
 Resources created before the label existed are not swept; remove them with `docker ps --all --filter label=rapunzel.egress=1` and `docker network ls --filter label=rapunzel.egress=1`.
 
+### D14: Host-only, per-run destination grants with confirmed reload
+
+**Decision.**
+Keep Pipelock (currently pinned 3.6.0) and add `rapunzel-ctl` for run discovery, redacted config inspection, blocked events, and runtime grants. The startup policy is immutable for the controller; only exact additional DNS names may be granted/revoked, only in `allowlist` mode. `trusted_domains`, SNI verification, TLS requirements, and the credential gateway are not loosened. Allowed hosts may therefore also come from an explicit host-side operator grant during the run, never from the mounted project or agent state.
+
+Each run has a random ID and resource labels. The host keeps per-run policy metadata outside the mounted project in a caller-owned `0700` directory. No host control mount or published port is introduced. Mutations verify the selected daemon and resource labels, require the originating host, and serialize through a host lock. Staging uses `docker cp`; a temporary networkless Pipelock validator computes the normalized candidate hash. A networkless, capability-free helper mounts only the sidecar's config volume and atomically renames the validated file. It uses the running agent's immutable image ID rather than a mutable tag. The live sidecar receives SIGHUP, and a fresh success event must acknowledge the exact candidate hash before metadata is committed. A daemon timestamp fences acknowledgements so an earlier application of the same hash cannot confirm a later mutation.
+
+**Why.**
+This provides deny → inspect → approve → retry without replacing the proxy, trusting the harness, or adding TLS interception. Free Community features suffice because each run already has its own sidecar and base policy. Private-host trust expansion is deliberately excluded; Pipelock strict-policy reload may reject it as a downgrade anyway.
+
+**Failure and scope.**
+Rejected candidates leave the current config active. An unconfirmed reload triggers rollback; unconfirmed rollback attempts sidecar shutdown and verifies it through Docker inspect before claiming egress stopped. If the daemon cannot confirm shutdown, policy remains uncertain and the operator must stop/restart the run. Catchable interruption after replacement uses the same cleanup, owned by the controller PID rather than an orphanable transaction subshell. Bash can defer the trap until a foreground Docker call completes. SIGKILL cannot run cleanup: a stale lock or uncertainty requires restarting the run, not automatically reaping a guessed PID lock. A killed validator carries egress/owner labels for the existing stale-resource sweep. Host metadata left by an unclean exit is not auto-deleted; it is inert and not listed as a live run. Operator audit is per-run, not a durable compliance trail.
+
+Accepted-generation reconciliation scans all retained sidecar logs; fresh acknowledgements use the daemon-time fence without a line-count cap. The diagnostic window must not let blocked traffic displace transaction evidence. If log rotation removes every acknowledgement, updates refuse safely. Failed Docker log reads are errors, not empty histories. Successful rollback does not terminate tunnels admitted while an expanded policy was temporarily active. Output failure after commit can produce a nonzero exit despite a successful update.
+
+The unreleased controller uses text on a terminal and JSON when redirected, with explicit format overrides. Selection accepts unique 8–24-character prefixes in the caller's registry, counts stale/foreign collisions as ambiguous, freezes the full ID, and revalidates before mutation. Discovery lists only verified registry-backed live agents on the selected daemon. No implicit newest/project selection is made. One hostname grammar (including DNS length bounds) validates policy entries and event candidates; no raw rejected hostname is echoed to a terminal. `pending` is a versioned grouped snapshot with current policy coverage and observed event counts/ports/times; `watch` remains a sanitized stream. Neither is an approval authority or proof of successful connectivity.
+
+Grants last only for this run, are not single-request approvals, and permit uploads as well as downloads. Revocation affects new tunnels only and cannot override startup wildcard grants. Existing tunnels may continue. `pending` is bounded block-log history, not a request-holding queue. Strict mode remains provider-only.
+
 ## Residual risks
 
 Ranked by the security review:
@@ -302,6 +321,8 @@ A listener on the host network acts as a canary.
   - the variables named by `RAPUNZEL_BASE_URL_VARIABLE` and `RAPUNZEL_API_KEY_VARIABLE` hold the gateway route and the placeholder.
   - with the opencode harness, when `rapunzel:opencode` is built: the bootstrap routes the custom and `anthropic` providers through the gateway with the placeholder, lists the custom models through it, and no real key reaches the sandbox.
 - **Afterwards:** no sidecar container or network is left behind. A launcher killed before its cleanup leaves them for the next run's sweep ([D13](#d13-stale-per-run-resources-are-swept-by-the-next-run)).
+
+`./test-control.sh` checks redaction, configuration precedence, shared hostname validation, prefix collisions, grouped policy coverage, terminal-safe output, log errors, and shutdown wording without Docker. `./verify-control.sh` exercises live grant/revoke, prefix selection, policy-aware history, fresh hash acknowledgements after more than 2,000 denials, cross-run isolation, concurrent mutation handling, invalid candidates, lost acknowledgements, CLI-PID-only interruption before/after replacement, retained private-address blocking, and cleanup. Run it separately from `verify-egress.sh`, whose final resource-count check assumes no other egress tests start concurrently.
 
 CI runs it on every pull request.
 Tested on Docker Desktop 29 (macOS, arm64), Colima with Docker Engine 29 (macOS, arm64), and Docker Engine 28 (Ubuntu, CI); WSL2 is not yet tested.

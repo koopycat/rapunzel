@@ -199,6 +199,8 @@ A provider can come from a pi extension that reads its own variables, for exampl
 
 The full reasoning, including rejected alternatives and test evidence, is in [Egress control: architecture and decisions](egress.md).
 
+**Runtime control.** `rapunzel-ctl` lists verified registry-backed live runs and inspects their redacted policy. Unique run prefixes resolve to a frozen full ID; mutations revalidate under the update lock. Text on terminals and JSON in pipes both escape untrusted strings. Grouped blocked-event snapshots show current policy coverage, not held requests or confirmed connectivity. `config` calls the launcher's own policy construction without starting Docker. In `allowlist` mode, operators may add exact host allowances for a selected run and revoke only those added allowances. Authoritative metadata lives in a caller-owned `0700` host directory outside `/workspace`, never in the agent's volume. The controller validates a staged configuration with a networkless instance of the pinned sidecar image and commits only after a fresh live reload event acknowledges the expected hash. Transaction evidence is independent of the bounded diagnostic history. Atomic replacement uses a separate networkless helper; no host bind mount, control port, or Docker socket enters the workload. The controller owns signal cleanup. An uncertain reload/rollback attempts sidecar shutdown, verifies it before reporting success, and reports unconfirmed shutdown explicitly. Grants do not bypass private-address protection, persist to future runs, or close existing tunnels on revoke. Strict-mode routing is unchanged. See [D14](egress.md#d14-host-only-per-run-destination-grants-with-confirmed-reload) and the [runtime guide](guide.md#runtime-egress-control).
+
 ### 4.6 Files the host runs
 
 Network controls do not help if the agent writes a git hook and the user then runs `git commit` on the host.
@@ -307,6 +309,7 @@ The [guide](guide.md) explains each setting with examples.
 | `rapunzel` | Launcher: arguments, environment filter, egress setup, mounts, run, cleanup. |
 | `lib/volumes.sh` | Per-project volume names and ownership preparation. |
 | `lib/egress.sh` | Per-run networks, Pipelock and Caddy sidecars, allowlist construction. |
+| `rapunzel-ctl`, `lib/control.{sh,jq}`, `lib/ctl-output.{sh,jq}`, `lib/runs.sh`, `lib/policy.sh` | Host-side run discovery, safe text/JSON, grouped history, shared startup policy, and confirmed runtime grants. |
 | `lib/host-files.sh` | Read-only git mounts, snapshots, and the change report. |
 | `lib/docker.sh` | Docker reachability check. |
 | `Dockerfile` | Image: shared base stage, then one final stage per harness (pi is the default). |

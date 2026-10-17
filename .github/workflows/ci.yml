@@ -41,15 +41,22 @@ jobs:
           shellcheck \
             bootstrap.sh \
             lib/docker.sh \
+            lib/control.sh \
+            lib/ctl-output.sh \
             lib/egress.sh \
             lib/host-files.sh \
             lib/profile.sh \
+            lib/policy.sh \
+            lib/runs.sh \
             lib/volumes.sh \
             rapunzel \
+            rapunzel-ctl \
             rapunzel-ext \
             rapunzel-shell \
             setup-identity.sh \
             test.sh \
+            test-control.sh \
+            verify-control.sh \
             verify-egress.sh \
             verify-host-files.sh \
             verify-isolation-inner.sh \
@@ -61,6 +68,9 @@ jobs:
           for f in profiles/*/bootstrap.mjs; do node --check "$f"; done
           node --check lib/egress-probe.mjs
           node --check lib/prune-foreign-platforms.mjs
+
+      - name: Host controller tests (no Docker)
+        run: ./test-control.sh
 
       - name: Build image
         run: docker build --pull -t rapunzel .
@@ -104,3 +114,6 @@ jobs:
         run: |
           docker version --format 'Docker Engine {{.Server.Version}}'
           ./verify-egress.sh
+
+      - name: Runtime egress controller checks
+        run: ./verify-control.sh
