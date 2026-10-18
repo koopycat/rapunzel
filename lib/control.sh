@@ -111,7 +111,8 @@ control_update() {
         printf 'rapunzel-ctl: policy update locked; another update is active or interrupted (restart the run if stale)\n' >&2; exit 1
     }
     validator=''
-    # shellcheck disable=SC2329 # EXIT trap
+    # Invoked as the EXIT trap, so ShellCheck sees the body as unreachable.
+    # shellcheck disable=SC2317,SC2329
     control_cleanup() {
         set +e
         trap '' HUP INT TERM
