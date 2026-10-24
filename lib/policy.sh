@@ -9,12 +9,22 @@ policy_host() {
 }
 
 policy_collect() {
-    local host login before index
+    local host login before index entry id key_name origin
     EGRESS_HOSTS=() EGRESS_PRIVATE_HOSTS=() EGRESS_REASONS=()
-    [[ "$EGRESS" == allowlist ]] || return 0
+    [[ "$EGRESS" != open ]] || return 0
+    if [[ "$EGRESS" == strict ]]; then
+        # Hosts the harness's tools may reach (package registries, git hosts)
+        # through Pipelock next to the gateway. Model APIs stay gateway-only.
+        IFS=$', \t' read -r -a extra_hosts <<<"${RAPUNZEL_EGRESS_ALLOW:-}"
+        for host in ${extra_hosts[@]+"${extra_hosts[@]}"}; do policy_host "$host" 'RAPUNZEL_EGRESS_ALLOW (tools)'; done
+        policy_refuse_provider_hosts
+        return
+    fi
     for host in ${H_EGRESS_HOSTS[@]+"${H_EGRESS_HOSTS[@]}"}; do policy_host "$host" "profile ${H_NAME}"; done
-    [[ -z "$(runtime_value ANTHROPIC_API_KEY)" ]] || policy_host api.anthropic.com 'ANTHROPIC_API_KEY present'
-    [[ -z "$(runtime_value OPENAI_API_KEY)" ]] || policy_host api.openai.com 'OPENAI_API_KEY present'
+    for entry in "${GATEWAY_BUILTINS[@]}"; do
+        read -r id key_name origin _ <<<"$entry"
+        [[ -z "$(runtime_value "$key_name")" ]] || policy_host "${origin#https://}" "${key_name} present"
+    done
     if [[ -n "$custom_url" ]]; then
         host=$(url_host "$custom_url") || return 1
         policy_host "$host" 'custom provider URL' || return 1
@@ -33,6 +43,31 @@ policy_collect() {
     for host in ${private_hosts[@]+"${private_hosts[@]}"}; do
         egress_allow_private_host "$host"
         EGRESS_REASONS+=("$host: RAPUNZEL_EGRESS_ALLOW_PRIVATE")
+    done
+}
+
+# In strict mode an allowed host must not lead to a provider API: there the
+# agent could use a key of its own and send data out under an attacker's
+# account, which is what the gateway's overwritten headers prevent.
+policy_refuse_provider_hosts() {
+    local entry origin provider pattern suffix providers=()
+    for entry in "${GATEWAY_BUILTINS[@]}"; do
+        read -r _ _ origin _ <<<"$entry"
+        providers+=("${origin#https://}")
+    done
+    if [[ -n "$custom_url" ]]; then
+        providers+=("$(url_host "$custom_url")") || return 1
+    fi
+    for pattern in ${EGRESS_HOSTS[@]+"${EGRESS_HOSTS[@]}"}; do
+        for provider in "${providers[@]}"; do
+            suffix=${pattern#\*.}
+            if [[ "$pattern" == "$provider" ]] ||
+                [[ "$pattern" == \*.* && ("$provider" == "$suffix" || "$provider" == *".$suffix") ]]; then
+                printf 'rapunzel: RAPUNZEL_EGRESS_ALLOW entry %s covers the provider API host %s; with RAPUNZEL_EGRESS=strict that host is reachable only through the gateway\n' \
+                    "$pattern" "$provider" >&2
+                return 1
+            fi
+        done
     done
 }
 

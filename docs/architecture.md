@@ -16,7 +16,7 @@ Every one of these properties is checked by scripts that act as a hostile agent 
 1. **The boundary is outside the agent.** rapunzel does not rely on the agent's own permission prompts or sandbox. Docker, the launcher, and sidecar containers enforce every control, whichever harness runs inside.
 2. **One host directory, nothing else.** The project is mounted at `/workspace`. The host home directory, `~/.pi`, `~/.ssh`, and the Docker socket are never mounted. Agent state lives in a per-project named volume.
 3. **No privileges.** The agent runs as the caller's numeric UID and GID, with all capabilities dropped and `no-new-privileges` set.
-4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts. `strict` gives only fixed provider routes and no real API key.
+4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts. `strict` gives only fixed provider routes and no real API key, optionally plus named non-provider HTTPS hosts for tools.
 5. **The network boundary fails closed.** In both restricted modes the agent sits on a Docker `--internal` network with no route, no external DNS, and no host address. Anything that ignores the proxy has nowhere to go.
 6. **The host is protected from planted files.** Git hooks and git configuration are read-only inside the container, so the agent cannot make the host's git run its code. Other host-executed files are reported, not blocked.
 7. **Claims are tested, not assumed.** `verify-isolation.sh`, `verify-host-files.sh`, and `verify-egress.sh` probe the boundary from inside the container. CI runs them on every change and before every image release.
@@ -156,7 +156,7 @@ How far they reach depends on the egress mode (section 4.5): in `open` and `allo
 |---|---|---|
 | `open` (default) | yes | the internet through Docker's `bridge` network |
 | `allowlist` | yes | only allowlisted hosts over HTTPS |
-| `strict` | no, only a placeholder | only fixed provider routes on a credential gateway |
+| `strict` | no, only a placeholder | only fixed provider routes on a credential gateway, plus, with `RAPUNZEL_EGRESS_ALLOW`, the listed non-provider hosts over HTTPS |
 
 **The network layer.**
 Both restricted modes create two networks per run.
@@ -177,7 +177,7 @@ The allowlist is built only from settings on the host:
 
 | Setting | Allowed host |
 |---|---|
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | `api.anthropic.com`, `api.openai.com` |
+| A built-in provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY`) | that provider's API host |
 | `RAPUNZEL_API_BASE_URL` | that URL's host |
 | `RAPUNZEL_EGRESS_LOGINS` | model API and token refresh hosts of named `/login` providers |
 | `RAPUNZEL_EGRESS_ALLOW` | listed hosts; `*.example.com` also matches `example.com` |
@@ -188,9 +188,13 @@ It is never read from `auth.json` or anything else in the volume, because the ag
 **strict mode.**
 The sidecar is a Caddy reverse proxy that holds the real keys.
 The bootstrap points pi's providers at `http://llm-proxy:8080`, and the agent holds the placeholder `rapunzel-gateway`.
-Caddy forwards only `/anthropic`, `/openai`, and `/custom` to fixed upstreams, always overwrites the auth headers with the real key, and answers everything else with 403.
+Caddy forwards only one route per built-in provider with a key (`/anthropic`, `/openai`, `/openrouter`, `/google`, `/groq`, `/mistral`, `/deepseek`, `/xai`) and `/custom` to fixed upstreams, always overwrites the auth headers with the real key, drops a `key` query parameter, and answers everything else with 403.
 Overwriting rather than swapping a placeholder matters: it stops the agent from using an allowed provider with an attacker's key to send data out.
 OAuth logins cannot use this mode, because pi refreshes those tokens itself and keeps them in the volume.
+
+**strict mode with a tool allowlist.**
+`RAPUNZEL_EGRESS_ALLOW` in strict mode starts Pipelock next to the gateway, configured as in allowlist mode, so tools can install packages or clone repositories while the provider key stays out.
+An entry that covers a provider's API host is refused at startup, so the agent still cannot reach a provider except through the gateway ([D15](egress.md#d15-strict-mode-with-a-tool-allowlist)).
 
 **Extension providers.**
 A provider can come from a pi extension that reads its own variables, for example `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`.
@@ -209,6 +213,10 @@ rapunzel handles this in two layers.
 **Prevention for git.**
 `.git/config`, `.git/hooks`, and a `core.hooksPath` directory inside the project (such as `.husky`) are mounted read-only on top of the project mount.
 The agent can still commit, branch, and stash; it cannot add a hook, set `core.fsmonitor`, or change `core.hooksPath`.
+`.git` itself is first bind-mounted onto its own path.
+Read-only sub-mounts move with their parent directory, so without this the agent could rename `.git` and create a new one with its own config and hooks, which the host's git would then use.
+A mount point cannot be renamed, so the rename fails.
+A symlinked `.git/config` or `.git/hooks` would dangle inside the container and could be replaced there, so the launcher refuses to start instead.
 Linked worktrees and submodules keep their git directory outside the project, so it is not mounted at all.
 
 **Detection for everything else.**
@@ -229,7 +237,7 @@ The trade-off is deliberate: making the whole `.git` read-only would stop the ag
 |---|---|---|
 | `test.sh` | pi starts through the real entrypoint; the identity maps to `agent`; configuration is written; `HOME` is writable by the caller's UID; the platform's esbuild binary is present. | none |
 | `verify-isolation.sh` | The process is not root; `/workspace` and the volume are writable; host paths (`/Users`, `/Volumes`, host home, `~/.ssh`, `~/.pi`) are not visible; the mount table has no host home mount. | none |
-| `verify-host-files.sh` | Writing git hooks, git config, and `core.hooksPath` hooks fails; a commit still works; planted `.envrc`, editor tasks, and git attributes are reported. | none |
+| `verify-host-files.sh` | Writing git hooks, git config, and `core.hooksPath` hooks fails; moving `.git` aside fails; a commit still works; planted `.envrc`, editor tasks, and git attributes are reported. | none |
 | `verify-egress.sh strict` | No external DNS, direct IPv4/IPv6, metadata, or host access; the upstream is reachable only through the gateway; unknown routes get 403; the real key never reaches the agent; the agent's own credentials are replaced. | none |
 | `verify-egress.sh allowlist` | The same network checks; an allowed host works; other hosts, IP literals, a mismatched or missing SNI, plaintext tunnels, and plain HTTP are refused; private hosts need `RAPUNZEL_EGRESS_ALLOW_PRIVATE`. | internet |
 
@@ -260,7 +268,7 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 3. **Encrypted Client Hello (medium, unverified).** With ECH, the outer SNI can name an allowed host while the inner one names another site on the same CDN. Pipelock has no ECH handling.
 4. **Agent-volume tampering (medium).** Extensions, settings, and trust decisions persist in the volume and run again in the next session.
 5. **Sidecar compromise (medium).** A compromised sidecar has full egress, limited to the internet by its per-run outbound network.
-6. **Unpinned transitive dependencies (medium).** Since pi 1.0.1 the package ships no shrinkwrap, so its dependencies resolve at image build time.
+6. **Dependency supply chain (low for pi, medium for other harnesses).** pi's whole dependency tree is locked with integrity hashes in `profiles/pi/package-lock.json`, so a build cannot pick up a newly published malicious version; a compromised version that was already locked in stays a risk until it is noticed. The other harnesses still resolve their dependencies at build time.
 7. **Kernel or runtime escape (low likelihood, high impact).** On Linux this reaches the host; on Docker Desktop and Colima it reaches the VM.
 
 ## 7 Design decisions and alternatives
@@ -282,7 +290,7 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 - **WSL2** has not been tested.
 - **Clone-based workspace.** Letting the agent work in a container-local clone, and fetching its commits on the host for review, would close the host-executed-file risk without relying on reports.
 - **Other harnesses.** Claude Code is a profile (`profiles/claude`) with `open` and `allowlist` egress; `strict` needs a gateway route and placeholder key that Claude Code is not yet known to accept. Codex CLI is a profile (`profiles/codex`) with `open` and `allowlist` egress; its own bubblewrap sandbox cannot run in the container, so it runs with `sandbox_mode = "danger-full-access"` inside rapunzel's boundary. DeepSeek Harness is a profile (`profiles/dsh`) whose default command is a web UI: the launcher publishes it on the host's `127.0.0.1` only, in `open` mode only, because Docker cannot publish ports from the `--internal` network of the restricted modes; reaching it through the sidecar would lift that limit. opencode is a profile (`profiles/opencode`) with `open` and `allowlist` egress; it has no single home variable, so its image points the four XDG base directories into the volume and the profile leaves `H_STATE_ENV` empty. Its bootstrap turns pi's custom-provider variables into an opencode provider, listing the endpoint's models at startup, in a rapunzel-owned file that the image loads through `OPENCODE_CONFIG`; the user's own `opencode.json` is never edited, and the key appears only as an `{env:...}` reference. In `strict` mode the same file points the custom provider and the built-in `anthropic` and `openai` providers at the credential gateway with the placeholder key, so opencode, like pi, never holds a real key. Copilot CLI would plug into the same launcher as a further profile. Copilot needs `api.github.com`, which exposes GitHub's whole API, so it should be opt-in.
-- **Reproducible builds.** Pinning pi's transitive dependencies would remove risk 6.
+- **Reproducible builds.** pi's dependency tree is locked; the other harnesses could use the same lockfile pattern.
 
 ## Appendix A: Configuration reference
 

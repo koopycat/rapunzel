@@ -99,7 +99,18 @@ const gatewayProviders = new Set(
   (env.RAPUNZEL_GATEWAY_PROVIDERS ?? "").split(",").map((name) => name.trim()).filter(Boolean),
 );
 const gatewayKey = "rapunzel-gateway";
-const gatewayRoutes = { anthropic: "/anthropic", openai: "/openai/v1" };
+// The base URL pi uses for each provider, relative to the gateway; the gateway
+// maps /<provider> to the upstream (lib/egress.sh, GATEWAY_BUILTINS).
+const gatewayRoutes = {
+  anthropic: "/anthropic",
+  openai: "/openai/v1",
+  openrouter: "/openrouter",
+  google: "/google/v1beta",
+  groq: "/groq/v1",
+  mistral: "/mistral",
+  deepseek: "/deepseek",
+  xai: "/xai/v1",
+};
 for (const [name, route] of Object.entries(gatewayRoutes)) {
   const entry = models.providers[name];
   if (gatewayUrl && gatewayProviders.has(name)) {

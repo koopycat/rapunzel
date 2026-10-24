@@ -58,6 +58,7 @@ attempt append-git-config sh -c "printf \"[core]\n\tfsmonitor = evil\n\" >> .git
 attempt git-config-fsmonitor git config core.fsmonitor evil
 attempt write-hooks-path-hook sh -c "printf \"#!/bin/sh\n\" > .husky/post-checkout"
 attempt replace-hooks-path-hook sh -c "printf \"#!/bin/sh\n\" > .husky/pre-commit"
+attempt swap-git-dir sh -c "mv .git .git-moved && mkdir -p .git/hooks && printf \"#!/bin/sh\n\" > .git/hooks/post-checkout"
 attempt git-commit git -c user.name=pi -c user.email=pi@example.invalid commit --quiet --allow-empty -m from-container
 mkdir -p .vscode
 printf "{}\n" > .vscode/tasks.json
@@ -71,7 +72,7 @@ output=$(
         RAPUNZEL_IMAGE="$IMAGE" \
         RAPUNZEL_VOLUME="$VOLUME" \
         "${ROOT_DIR}/rapunzel" --exec "$project" bash -c "$attempts" 2>"$report"
-)
+) || true # a failed attempt can fail the script's last command; judge the RESULT lines
 
 failures=0
 fail() {
@@ -93,11 +94,13 @@ expect append-git-config 1
 expect git-config-fsmonitor 1
 expect write-hooks-path-hook 1
 expect replace-hooks-path-hook 1
+expect swap-git-dir 1
 expect git-commit 0
 
 [[ "$(cat "${project}/.git/config")" == "$config_before" ]] || fail "the host's .git/config changed"
 [[ ! -e "${project}/.git/hooks/post-checkout" && ! -e "${project}/.husky/post-checkout" ]] ||
     fail "a hook reached the host"
+[[ ! -e "${project}/.git-moved" ]] || fail "the container moved .git aside on the host"
 [[ "$(git -C "$project" log -1 --format=%s)" == from-container ]] || fail "the commit made in the container is missing"
 
 for expected in "added: .envrc" "added: .vscode/tasks.json" "added: .git/info/attributes"; do

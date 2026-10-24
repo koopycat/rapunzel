@@ -1,0 +1,8 @@
+{
+  "name": "rapunzel-pi",
+  "private": true,
+  "description": "pi and its locked dependency tree for the rapunzel image (Dockerfile, pi stage)",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0"
+  }
+}

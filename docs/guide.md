@@ -27,11 +27,7 @@ Build the image with the pinned pi version (currently `1.4.0`):
 docker build --pull -t rapunzel .
 ```
 
-To choose a different published version explicitly:
-
-```bash
-docker build --pull --build-arg PI_VERSION=1.4.0 -t rapunzel .
-```
+pi and its whole dependency tree are locked in `profiles/pi/package-lock.json`, so every build installs the same, integrity-checked packages.
 
 Put this checkout on your `PATH`, for example in `~/.zshrc` or `~/.bashrc`:
 
@@ -292,8 +288,8 @@ The project's `opencode.json` and `.opencode/` are in the [host-file report](#fi
 
 Egress:
 
-- `allowlist` adds `api.anthropic.com` and `api.openai.com` through their keys; allow any other provider's API host with `RAPUNZEL_EGRESS_ALLOW` (opencode Zen: `opencode.ai`). opencode honors `HTTPS_PROXY`. A login needs its sign-in hosts too, through `RAPUNZEL_EGRESS_LOGINS` or `RAPUNZEL_EGRESS_ALLOW`. In the restricted modes, `OPENCODE_DISABLE_MODELS_FETCH=1` keeps opencode on its bundled model catalog instead of fetching models.dev, and `OPENCODE_DISABLE_LSP_DOWNLOAD=1` stops language-server downloads that would fail.
-- `strict` works with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and a custom provider. The bootstrap points opencode's built-in `anthropic` and `openai` providers at the gateway's `/anthropic/v1` and `/openai/v1` routes, and the custom provider at `/custom` (the launcher rewrites `RAPUNZEL_API_BASE_URL` and the key variable), all with the placeholder key `rapunzel-gateway`; the gateway sends the real key upstream. The custom provider's model list is fetched through the gateway too. `OPENCODE_CONFIG_CONTENT` is not passed in this mode, because it can carry a key; other providers, opencode Zen, and logins from `opencode auth login` have no route. The bootstrap warns when `auth.json` in the volume still holds logins.
+- `allowlist` adds the API host of each built-in provider whose key is set (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY`); allow any other provider's API host with `RAPUNZEL_EGRESS_ALLOW` (opencode Zen: `opencode.ai`). opencode honors `HTTPS_PROXY`. A login needs its sign-in hosts too, through `RAPUNZEL_EGRESS_LOGINS` or `RAPUNZEL_EGRESS_ALLOW`. In the restricted modes, `OPENCODE_DISABLE_MODELS_FETCH=1` keeps opencode on its bundled model catalog instead of fetching models.dev, and `OPENCODE_DISABLE_LSP_DOWNLOAD=1` stops language-server downloads that would fail.
+- `strict` works with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and a custom provider; the gateway's other provider routes are wired up for pi only so far. The bootstrap points opencode's built-in `anthropic` and `openai` providers at the gateway's `/anthropic/v1` and `/openai/v1` routes, and the custom provider at `/custom` (the launcher rewrites `RAPUNZEL_API_BASE_URL` and the key variable), all with the placeholder key `rapunzel-gateway`; the gateway sends the real key upstream. The custom provider's model list is fetched through the gateway too. `OPENCODE_CONFIG_CONTENT` is not passed in this mode, because it can carry a key; other providers, opencode Zen, and logins from `opencode auth login` have no route. The bootstrap warns when `auth.json` in the volume still holds logins.
 
 ### Custom provider for opencode
 
@@ -334,6 +330,7 @@ Each normal `rapunzel` run has exactly these intentional host mounts:
 
 ```text
 PROJECT_DIR (read-write)            -> /workspace
+PROJECT_DIR/.git (read-write)       -> /workspace/.git (pinned, cannot be moved)
 PROJECT_DIR/.git/config (read-only) -> /workspace/.git/config
 PROJECT_DIR/.git/hooks (read-only)  -> /workspace/.git/hooks
 in-project core.hooksPath (read-only, if set, e.g. .husky)
@@ -366,7 +363,7 @@ A planted file like that runs outside the container the next time you use git, e
 
 `rapunzel` limits this in two ways:
 
-- **Read-only git control files.** `.git/config`, `.git/hooks`, and a `core.hooksPath` directory inside the project (such as `.husky`) are mounted read-only. pi can still commit, branch, and stash, but cannot add hooks or change what git runs. Commands that write the repository config, such as `git config` or `git push -u`, fail inside the container. If `.git/hooks` does not exist, `rapunzel` creates it on the host first, so it can be mounted.
+- **Read-only git control files.** `.git/config`, `.git/hooks`, and a `core.hooksPath` directory inside the project (such as `.husky`) are mounted read-only. pi can still commit, branch, and stash, but cannot add hooks or change what git runs. Commands that write the repository config, such as `git config` or `git push -u`, fail inside the container. If `.git/hooks` does not exist, `rapunzel` creates it on the host first, so it can be mounted. `.git` itself is mounted onto its own path, which makes it a mount point that cannot be renamed: otherwise pi could move `.git` aside, together with its read-only parts, and leave a fresh `.git` with its own config and hooks for the host's git. If `.git/config` or `.git/hooks` is a symlink, `rapunzel` refuses to start, because a symlink cannot be protected this way.
 - **A change report.** Before pi starts, `rapunzel` records hashes of files the host commonly runs; when pi exits, it lists every one that was added, modified, or removed:
 
   ```text
@@ -468,11 +465,15 @@ The host project and host home should have no corresponding session file.
 
 ## Updating pi
 
-The image pins pi at the `PI_VERSION` build argument's value.
-Rebuild with a deliberate version change:
+The image installs pi from `profiles/pi/package.json` and its lockfile, which pin pi and every transitive dependency.
+Renovate proposes updates to both together.
+To change the version by hand, update the lock and rebuild:
 
 ```bash
-docker build --pull --build-arg PI_VERSION=1.4.0 -t rapunzel .
+cd profiles/pi
+npm install --package-lock-only --ignore-scripts @earendil-works/pi-coding-agent@<version>
+cd ../..
+docker build --pull -t rapunzel .
 ```
 
 The other harnesses pin their versions the same way, with `CLAUDE_VERSION`, `CODEX_VERSION`, `DSH_VERSION`, and `OPENCODE_VERSION` (see the `ARG` lines in the `Dockerfile` for the current pins; Renovate proposes updates weekly):
@@ -666,15 +667,35 @@ The gateway serves only fixed routes and answers everything else with `403`:
 |---|---|---|---|
 | `/anthropic/*` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `x-api-key` |
 | `/openai/*` | `https://api.openai.com` | `OPENAI_API_KEY` | `Authorization: Bearer` |
+| `/openrouter/*` | `https://openrouter.ai/api` (`/v1/*`) or `/api/v1` (everything else) | `OPENROUTER_API_KEY` | `Authorization: Bearer` |
+| `/google/*` | `https://generativelanguage.googleapis.com` | `GEMINI_API_KEY` | `x-goog-api-key` |
+| `/groq/*` | `https://api.groq.com/openai` | `GROQ_API_KEY` | `Authorization: Bearer` |
+| `/mistral/*` | `https://api.mistral.ai` | `MISTRAL_API_KEY` | `Authorization: Bearer` |
+| `/deepseek/*` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `Authorization: Bearer` |
+| `/xai/*` | `https://api.x.ai` | `XAI_API_KEY` | `Authorization: Bearer` |
 | `/custom/*` | `RAPUNZEL_API_BASE_URL` | `RAPUNZEL_API_KEY` or `RAPUNZEL_API_KEY_VARIABLE` | `x-api-key` for `anthropic-messages`, otherwise `Authorization: Bearer` |
 
-The gateway always overwrites these headers and removes the other one, so pi cannot use an allowed provider with a credential of its own, for example to upload data to a provider's file API under an attacker's account.
+The gateway always overwrites the route's header, removes the other credential headers (`Authorization`, `x-api-key`, `x-goog-api-key`), and drops a `key` query parameter, so pi cannot use an allowed provider with a credential of its own, for example to upload data to a provider's file API under an attacker's account.
 Requests and responses are otherwise passed through unchanged and streamed without buffering.
 Credentials can come from the host environment or from `RAPUNZEL_ENV_FILE`; the gateway reads them from a temporary env-file that is deleted after the run.
 
+#### Tools next to the gateway
+
+Package installs and `git clone` need more than the model API.
+`RAPUNZEL_EGRESS_ALLOW` in strict mode lets the harness's tools reach the listed hosts through a Pipelock allowlist proxy, the same one `allowlist` mode uses, while the provider key stays in the gateway:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... RAPUNZEL_EGRESS=strict \
+  RAPUNZEL_EGRESS_ALLOW=registry.npmjs.org,github.com,codeload.github.com rapunzel
+```
+
+`rapunzel` refuses an entry that equals or covers a provider's API host, such as `*.anthropic.com` or `openrouter.ai`: there pi could use the provider with a key of its own, which is exactly what strict mode prevents.
+Each listed host is still a way out for what pi reads, so keep the list short.
+`RAPUNZEL_EGRESS_ALLOW_PRIVATE`, `RAPUNZEL_EGRESS_LOGINS`, and `rapunzel-ctl` grants work in `allowlist` mode only.
+
 Limitations of strict mode:
 
-- Only the three routes above are supported. Other provider keys, `RAPUNZEL_HEADERS_JSON`, and proxy variables are not passed, and `rapunzel` names them in a warning.
+- Only the routes above are supported; the provider table lives in `GATEWAY_BUILTINS` in `lib/egress.sh`. Other provider keys, `RAPUNZEL_HEADERS_JSON`, and proxy variables are not passed, and `rapunzel` names them in a warning.
 - Credentials stored with `/login` live in `auth.json` inside the agent volume, where the gateway cannot protect them. The bootstrap warns when `auth.json` is not empty; run `/logout` to remove them.
 
 ### Extension providers

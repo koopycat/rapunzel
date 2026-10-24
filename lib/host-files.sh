@@ -8,8 +8,9 @@
 # reports changes to the rest after each run.
 #
 # Source this file from the wrapper scripts. It defines:
-#   host_files_mounts   - read-only mounts for .git/config, .git/hooks and an
-#                         in-project core.hooksPath; sets HOST_FILE_MOUNTS
+#   host_files_mounts   - pin .git in place and mount .git/config, .git/hooks
+#                         and an in-project core.hooksPath read-only; sets
+#                         HOST_FILE_MOUNTS, fails if one of them is a symlink
 #   host_files_snapshot - record hashes of host-executed files
 #   host_files_report   - print what changed between two snapshots
 
@@ -59,13 +60,31 @@ host_files_mounts() {
     # outside the project and therefore not mounted at all.
     [[ -d "${project}/.git" && ! -L "${project}/.git" ]] || return 0
 
-    if [[ -f "${project}/.git/config" && ! -L "${project}/.git/config" ]]; then
+    # A symlinked config or hooks directory cannot be mounted read-only in
+    # place: it dangles in the container, where pi could replace it with a real
+    # one that the host's git then uses. Refuse instead of running unprotected.
+    local path
+    for path in .git/config .git/hooks; do
+        if [[ -L "${project}/${path}" ]]; then
+            printf 'rapunzel: %s is a symlink, so it cannot be protected; replace it with a regular file or directory
+' \
+                "$path" >&2
+            return 1
+        fi
+    done
+
+    # .git itself goes onto its own path first. A mount point cannot be renamed,
+    # so pi cannot move .git aside and leave a fresh one with its own config and
+    # hooks for the host's git to use; the read-only sub-mounts alone do not
+    # stop that, because they move along with their parent.
+    HOST_FILE_MOUNTS+=(--mount "type=bind,src=${project}/.git,dst=/workspace/.git")
+    if [[ -f "${project}/.git/config" ]]; then
         HOST_FILE_MOUNTS+=(--mount "type=bind,src=${project}/.git/config,dst=/workspace/.git/config,readonly")
     fi
     # git init creates hooks/, but some clones lack it. Without the directory
     # pi could create hooks that the host would run.
     [[ -e "${project}/.git/hooks" ]] || mkdir "${project}/.git/hooks"
-    if [[ -d "${project}/.git/hooks" && ! -L "${project}/.git/hooks" ]]; then
+    if [[ -d "${project}/.git/hooks" ]]; then
         HOST_FILE_MOUNTS+=(--mount "type=bind,src=${project}/.git/hooks,dst=/workspace/.git/hooks,readonly")
     fi
     hooks_dir=$(_hooks_path_in_project "$project")

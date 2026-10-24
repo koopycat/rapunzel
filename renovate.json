@@ -6,12 +6,10 @@
   "rebaseWhen": "conflicted",
   "customManagers": [
     {
-      "description": "Pinned pi version in the Dockerfile and the guide",
+      "description": "pi version quoted in the guide; the pin itself is profiles/pi/package.json, which the npm manager updates together with its lockfile",
       "customType": "regex",
-      "managerFilePatterns": ["/^Dockerfile$/", "/^docs/guide\\.md$/"],
+      "managerFilePatterns": ["/^docs/guide\\.md$/"],
       "matchStrings": [
-        "ARG PI_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)",
-        "--build-arg PI_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)",
         "pinned pi version \\(currently `(?<currentValue>\\d+\\.\\d+\\.\\d+)`\\)"
       ],
       "depNameTemplate": "@earendil-works/pi-coding-agent",

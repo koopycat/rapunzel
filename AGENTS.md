@@ -15,7 +15,7 @@ pi is the default harness; Claude Code, Codex CLI, DeepSeek Harness (dsh), and o
 - `./verify-control.sh` (internet, no credentials; run separately from verify-egress.sh)
 - `./test.sh`
 - `./verify-isolation.sh [project-directory]`
-- `./verify-egress.sh [allowlist|strict]` (allowlist needs internet, strict runs offline; no credentials needed)
+- `./verify-egress.sh [allowlist|strict|strict-tools]` (allowlist and strict-tools need internet, strict runs offline; no credentials needed)
 - `./verify-host-files.sh` (needs git on the host)
 
 ## Invariants
@@ -23,7 +23,7 @@ pi is the default harness; Claude Code, Codex CLI, DeepSeek Harness (dsh), and o
 `docs/architecture.md` describes the design these invariants protect; keep it current when they change.
 
 
-- The only host bind mount is the requested project at `/workspace`, plus read-only sub-mounts of its `.git/config`, `.git/hooks`, and an in-project `core.hooksPath` (`lib/host-files.sh`). pi must stay able to commit; keep `./verify-host-files.sh` passing.
+- The only host bind mount is the requested project at `/workspace`, plus `.git` pinned onto its own path (a mount point cannot be renamed, so `.git` cannot be swapped) and read-only sub-mounts of its `.git/config`, `.git/hooks`, and an in-project `core.hooksPath` (`lib/host-files.sh`). A symlinked `.git/config` or `.git/hooks` stops the launch. pi must stay able to commit; keep `./verify-host-files.sh` passing.
 - The image sets `safe.directory=/workspace` system-wide because Docker Desktop shows the mount root as owned by root.
 - Harness configuration and sessions live in a per-project, per-harness named Docker volume at the profile's `H_STATE_DIR` (pi: `/home/agent/.pi/agent`). A harness without a single home variable (opencode) leaves `H_STATE_ENV` empty, and its image points the harness's XDG directories into `H_STATE_DIR`.
 - A profile (`profiles/<name>/profile.sh`) is data only: command, state directory, environment names. It never weakens a launcher control, and profiles come only from this repository, never from a user-supplied path.
@@ -34,11 +34,11 @@ pi is the default harness; Claude Code, Codex CLI, DeepSeek Harness (dsh), and o
 - `RAPUNZEL_EGRESS=allowlist|strict` puts pi only on a per-run `--internal` network in isolated gateway mode; its one peer is a sidecar on a per-run outbound bridge (never the default bridge). Design and decisions live in `docs/egress.md`; update its decision records when changing `lib/egress.sh`.
 - allowlist mode: Pipelock must keep `sni_verification` and `sni_require_tls` on; `HTTP_PROXY` stays unset so cleartext fails closed. Allowed hosts come only from the host side (keys, base URL, `RAPUNZEL_EGRESS_LOGINS`, `RAPUNZEL_EGRESS_ALLOW`, `RAPUNZEL_EGRESS_ALLOW_PRIVATE`, and explicit per-run operator grants), never from agent-writable state such as `auth.json`. Private destinations are trusted only for exact names in `RAPUNZEL_EGRESS_ALLOW_PRIVATE`.
 - Runtime control metadata stays outside the mounted project in a caller-owned mode-0700 host directory. No controller socket, credentials, or Docker socket enters the workload. A grant succeeds only after the live proxy acknowledges the exact validated config hash; uncertain rollback stops egress. Revocation controls new tunnels, never claims to close existing ones, and never overrides startup policy.
-- strict mode: the harness (pi, opencode) receives no provider credentials; the Caddy gateway always overwrites auth headers and answers unknown routes with 403.
+- strict mode: the harness (pi, opencode) receives no provider credentials; the Caddy gateway always overwrites auth headers, drops `?key=`, and answers unknown routes with 403. Built-in provider routes come only from `GATEWAY_BUILTINS` in `lib/egress.sh`. With `RAPUNZEL_EGRESS_ALLOW`, Pipelock runs next to the gateway as `EGRESS_SIDECAR` (the gateway is then `GATEWAY_SIDECAR`), and an entry covering a provider API host must stop the launch (`policy_refuse_provider_hosts`).
 - Sidecar images are pinned by digest in `lib/egress.sh` and never automerged. Any change there must keep `./verify-egress.sh` passing.
 - The launcher publishes no ports, except a profile's web UI (`H_WEB_PORT`, dsh) when the harness runs with its default arguments in `open` egress mode: one port, bound to the host's `127.0.0.1` only, with the harness's own authentication left on.
 - Do not mount the host home directory, `~/.pi`, or `~/.ssh`.
 - `/home/agent` and `/home/agent/.pi` are mode 1777 because the runtime UID is the caller's, not the image's 1001; extensions write caches such as `~/.pi/cache` there.
-- Since pi 1.0.1 the package ships no `npm-shrinkwrap.json`, so transitive dependencies resolve at build time. `lib/prune-foreign-platforms.mjs` stays as a guard against foreign `@esbuild/*` platform binaries and must run in the same `RUN` layer as `npm install`.
+- pi and all transitive dependencies install with `npm ci --ignore-scripts` from `profiles/pi/package.json` and its `package-lock.json` (pi itself ships no shrinkwrap since 1.0.1). Change the pin only together with the lockfile. `lib/prune-foreign-platforms.mjs` stays as a guard against foreign `@esbuild/*` platform binaries and must run in the same `RUN` layer as `npm ci`.
 - `publish-image.yml` calls `ci.yml` and publishes only after it passes; do not add a separate push trigger to `ci.yml`.
 - Both workflows skip docs-only changes with `paths-ignore`, which is safe only while `main` has no required status checks; drop the `pull_request` filter in `ci.yml` before making `test` required. Keep the job timeouts and concurrency groups.
