@@ -602,7 +602,7 @@ Both restricted modes put pi on a per-run Docker network created with `--interna
 The only other member is a sidecar container, which is pi's only way out.
 The sidecar and both networks are removed when pi exits.
 Both modes need Docker Engine 28 or newer, set the harness's offline switches (for pi `PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, and `PI_TELEMETRY=0`), and cannot be combined with `RAPUNZEL_NETWORK`.
-`strict` is available for pi and opencode; the other harnesses refuse it.
+`strict` is available for pi, opencode, and Claude Code; Codex and dsh refuse it.
 
 ### allowlist mode
 

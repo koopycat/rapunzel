@@ -151,6 +151,7 @@ This project was called pi-docker. The rename is breaking, and the old names no 
 
 ## More
 
+- [Visual concept guide](docs/concepts.html): sandbox boundaries, network modes, state, lifecycle, and runtime grants (open the HTML file in a browser)
 - [Architecture](docs/architecture.md): goals, threat model, design, verification, and residual risks
 - [Configuration, storage, and provider options](docs/guide.md#provider-configuration)
 - [Shell mode and extension management](docs/guide.md#skills-and-extensions)
