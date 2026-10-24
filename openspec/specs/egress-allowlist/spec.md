@@ -64,7 +64,7 @@ Pipelock SHALL refuse private, loopback, link-local, and metadata addresses afte
 
 ### Requirement: SNI-verified HTTPS only
 
-The Pipelock config SHALL use strict mode with enforcement on, `forward_proxy.sni_verification: true`, `sni_require_tls: true`, a 900-second idle timeout for long model streams, metrics on `127.0.0.1` only, and JSON logs that include blocked but not allowed events. The agent SHALL receive `HTTPS_PROXY` and `https_proxy` pointing at the sidecar and `NODE_USE_ENV_PROXY=1`, and MUST NOT receive `HTTP_PROXY`, so cleartext requests fail closed.
+The Pipelock config SHALL use strict mode with enforcement on, `forward_proxy.sni_verification: true`, `sni_require_tls: true`, a 900-second idle timeout for long model streams, metrics on `127.0.0.1` only, and JSON logs that include blocked but not allowed events. When the pinned Pipelock release offers it, the config SHALL also refuse ClientHellos that carry the Encrypted Client Hello or ESNI extension. The agent SHALL receive `HTTPS_PROXY` and `https_proxy` pointing at the sidecar and `NODE_USE_ENV_PROXY=1`, and MUST NOT receive `HTTP_PROXY`, so cleartext requests fail closed.
 
 #### Scenario: Domain fronting on a shared CDN
 - **WHEN** the agent opens a CONNECT tunnel to an allowed host and sends a ClientHello naming another site
@@ -78,6 +78,10 @@ The Pipelock config SHALL use strict mode with enforcement on, `forward_proxy.sn
 - **WHEN** the agent opens a CONNECT tunnel to an allowed host and sends no TLS
 - **THEN** the proxy refuses it
 
+#### Scenario: Encrypted Client Hello
+- **WHEN** the pinned Pipelock supports ECH refusal and the agent sends a ClientHello with the ECH extension and an allowed outer server name
+- **THEN** the proxy refuses the tunnel
+
 ### Requirement: Package registries and GitHub are not allowed by default
 
 No package registry or GitHub host SHALL be on the allowlist unless the user adds it, because those hosts accept uploads with any token. The only built-in exception is the `github-copilot` login, which needs `api.github.com`.
@@ -85,3 +89,15 @@ No package registry or GitHub host SHALL be on the allowlist unless the user add
 #### Scenario: npm install in allowlist mode
 - **WHEN** the agent runs `npm install` with only provider keys configured
 - **THEN** the connection to `registry.npmjs.org` is refused
+
+### Requirement: No request rate limit on the allowlist proxy
+
+The Pipelock config SHALL set `fetch_proxy.monitoring.max_requests_per_minute` to 1,000,000, because Pipelock treats 0 as its default of 60 per host and minute and has no off switch. A local agent MUST NOT get `429` for opening many tunnels to an allowed host, since the limit counts tunnels, not data, and so does not bound exfiltration.
+
+#### Scenario: Burst of tunnels to an allowed host
+- **WHEN** the agent opens 70 CONNECT tunnels to an allowed host within a minute
+- **THEN** none of them is answered with `429`
+
+#### Scenario: Rendered config
+- **WHEN** the launcher renders the Pipelock config for an allowlist run
+- **THEN** it contains `max_requests_per_minute: 1000000` under `fetch_proxy.monitoring`

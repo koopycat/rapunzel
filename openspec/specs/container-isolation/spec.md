@@ -20,7 +20,7 @@ The agent container SHALL run as the caller's numeric UID and GID with `--cap-dr
 
 ### Requirement: Only the project is bind-mounted
 
-The only host bind mount SHALL be the requested project at `/workspace` (read-write), plus the read-only git sub-mounts defined by host-file protection. The host home directory, `~/.pi`, `~/.ssh`, and the Docker socket MUST NOT be mounted. The harness state comes from a named volume, never from a host path.
+In mount mode, the only host bind mount SHALL be the requested project at `/workspace` (read-write), plus the read-only git sub-mounts defined by host-file protection. In clone mode, the agent container SHALL have no host bind mount; `/workspace` is the workspace volume. The host home directory, `~/.pi`, `~/.ssh`, and the Docker socket MUST NOT be mounted. The harness state comes from a named volume, never from a host path.
 
 #### Scenario: Host paths invisible
 - **WHEN** a process in the agent container probes `/Users`, `/Volumes`, the host home, `~/.ssh`, and `~/.pi` from inside the container
@@ -29,6 +29,10 @@ The only host bind mount SHALL be the requested project at `/workspace` (read-wr
 #### Scenario: Host root refused
 - **WHEN** the user runs `rapunzel /`
 - **THEN** the launcher refuses to mount the host root as a project
+
+#### Scenario: Clone mode has no bind mount
+- **WHEN** a process in a clone-mode agent container lists its mounts
+- **THEN** `/workspace` and the state directory are volumes and no mount source is a host path
 
 ### Requirement: Resolvable identity without root
 
@@ -65,3 +69,23 @@ The entrypoint, shell entrypoint, and helper scripts SHALL be root-owned in the 
 #### Scenario: Agent tries to replace the entrypoint
 - **WHEN** the agent writes to `/usr/local/bin/rapunzel-entrypoint`
 - **THEN** the write fails with permission denied
+
+### Requirement: Resource limits for the agent process
+
+The agent container SHALL start with a process limit, 4096 by default or `RAPUNZEL_PIDS_LIMIT` (an integer from 64 up), and with a memory limit only when `RAPUNZEL_MEMORY` is set (a Docker size such as `8g`, at least 64 MiB). An invalid value MUST stop the launcher with an error before any Docker resource is created.
+
+#### Scenario: Default process limit
+- **WHEN** the agent runs with no limit variables set
+- **THEN** the container's cgroup process limit is 4096 and no memory limit is set
+
+#### Scenario: Custom limits
+- **WHEN** `RAPUNZEL_PIDS_LIMIT=8192` and `RAPUNZEL_MEMORY=8g` are set
+- **THEN** the container's cgroup limits are 8192 processes and 8 GiB of memory
+
+#### Scenario: Fork bomb
+- **WHEN** a process in the agent container forks without bound
+- **THEN** new forks fail once the process limit is reached, and the Docker engine and other containers keep running
+
+#### Scenario: Invalid limit
+- **WHEN** `RAPUNZEL_PIDS_LIMIT=unlimited` or `RAPUNZEL_MEMORY=lots` is set
+- **THEN** the launcher prints which variable is invalid and exits before starting Docker
