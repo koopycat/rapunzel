@@ -387,6 +387,39 @@ The list is a fixed set of paths: a `build.rs` in a nested crate and run configu
 Review reported files before running anything on the host.
 Linked worktrees and submodules whose `.git` is a file keep their git directory outside the project, so it is not mounted at all.
 
+### Clone workspace
+
+With `--clone` (or `RAPUNZEL_WORKSPACE=clone`), the agent does not see your checkout at all.
+It works on a git clone in its own volume, and its commits come back for you to review:
+
+```bash
+rapunzel --clone                          # pi on a clone of the current repository
+rapunzel-claude --clone . --continue      # harness arguments as usual
+rapunzel --fetch                          # fetch the workspace's branches again, without starting pi
+```
+
+How history moves:
+
+- **Into the workspace.** Before each run, `rapunzel` bundles your branches and tags with your own git and passes the bundle to a short-lived, networkless helper container that has only the workspace volume. The first run clones and checks out your current branch, with your `user.name` and `user.email`. Later runs update `origin/<branch>` and your tags only; the agent's branches, index, and working tree stay as they were, so the agent merges or rebases when you ask it to.
+- **Back to you.** After each run the helper bundles the workspace's branches, and your git fetches that bundle with object checks into `refs/remotes/rapunzel-<harness>/<branch>`, never into your branches or tags. Your git never runs inside the agent's repository or reads its config, so hooks, `core.fsmonitor`, or tags the agent set there stay there.
+- **Review.** `rapunzel` lists the new commits per branch and flags every commit that touches a file the host runs on its own (the list in [Files the host runs](#files-the-host-runs)):
+
+  ```text
+  rapunzel: rapunzel-pi/main: 1 new commit(s) from the clone workspace
+    122af3d adds envrc
+      review: touches .envrc, which the host may run on its own
+  ```
+
+  Review with `git log -p --remotes='rapunzel-pi/*' --not --branches`, then merge or cherry-pick what you want, for example `git merge rapunzel-pi/main`.
+
+What is not in the workspace: uncommitted changes and untracked files in your checkout (such as `.env` or `node_modules`; `rapunzel` says so when your checkout has any), submodules, and Git LFS objects.
+Work the agent did not commit stays in the volume for the next run and is reported, not fetched.
+Each project and harness has its own workspace volume, `rapunzel-<harness>-<hash>-workspace`; `rapunzel-ctl config .` shows its name with `RAPUNZEL_WORKSPACE=clone`.
+To start over, remove it with `docker volume rm` after fetching what you need.
+
+Clone mode needs a git repository with at least one commit, run from its top level.
+It adds no bind mount, so it also avoids the nested read-only git mounts that shut down Docker Desktop's VM in testing (see [limitations](architecture.md#8-limitations-and-future-work)).
+
 ### Why not mount the host `.pi`
 
 Mounting the host `.pi` would defeat the isolation boundary.

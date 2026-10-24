@@ -64,7 +64,9 @@ config_report() {
         --arg mode "$EGRESS" --arg modeSource "${RAPUNZEL_EGRESS+environment}" --arg envfile "${RAPUNZEL_ENV_FILE:-}" \
         --arg network "$NETWORK" --argjson policy "$policy" --argjson credentials "$credentials" \
         --argjson pids "$PIDS_LIMIT" --argjson memory "${MEMORY_LIMIT:-null}" \
-        '{project:$project,harness:$harness,image:$image,volume:$volume,limits:{pids:$pids,memory:$memory},egress:$mode,
+        --arg workspace "$WORKSPACE_MODE" --arg workspaceVolume "$WORKSPACE_VOLUME" \
+        '{project:$project,harness:$harness,image:$image,volume:$volume,limits:{pids:$pids,memory:$memory},workspace:$workspace,
+          workspaceVolume:(if $workspace == "clone" then $workspaceVolume else null end),egress:$mode,
           egressSource:(if $modeSource == "" then "default" else $modeSource end),envFile:$envfile,
           network:(if $mode == "open" then $network else "per-run isolated internal network" end),
           policy:$policy,credentials:$credentials,providerKeysEnterAgent:($mode != "strict"),

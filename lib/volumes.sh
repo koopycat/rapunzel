@@ -2,8 +2,9 @@
 # Shared named-volume helpers: per-project naming and ownership preparation.
 #
 # Source this file from the wrapper scripts. It defines:
-#   project_volume_name  - stable per-project volume name derived from a path
-#   prepare_volume_owner - make a named volume writable by the invoking UID/GID
+#   project_volume_name    - stable per-project volume name derived from a path
+#   workspace_volume_name  - the clone workspace's volume for a project and harness
+#   prepare_volume_owner   - make a named volume writable by the invoking UID/GID
 
 # Derive a short, stable volume suffix from a canonical project path.
 project_hash() {
@@ -27,6 +28,13 @@ project_volume_name() {
     printf 'rapunzel-%s-%s' "$2" "$hash"
 }
 
+# The clone workspace (lib/workspace.sh) lives next to the state volume.
+workspace_volume_name() {
+    local name
+    name=$(project_volume_name "$@") || return 1
+    printf '%s-workspace' "$name"
+}
+
 # Make the agent volume writable by the invoking host UID/GID.
 #
 # The agent volume is mounted with `volume-nocopy`, so Docker never seeds it with
@@ -38,12 +46,14 @@ project_volume_name() {
 # creates the volume on first use. Preparation is one short-lived container that
 # only reads a marker file once the volume is prepared for this exact owner.
 #
-# Requires IMAGE, VOLUME, and H_STATE_DIR (see lib/profile.sh) to be set. Must be invoked as a non-root user.
+# Requires IMAGE, VOLUME, and H_STATE_DIR (see lib/profile.sh) to be set, or
+# takes another volume and its mount point as arguments. Must be invoked as a
+# non-root user.
 
 prepare_volume_owner() {
     : "${IMAGE:?prepare_volume_owner requires IMAGE to be set}"
-    : "${VOLUME:?prepare_volume_owner requires VOLUME to be set}"
-    : "${H_STATE_DIR:?prepare_volume_owner requires a loaded harness profile}"
+    local volume=${1:-${VOLUME:?prepare_volume_owner requires VOLUME to be set}}
+    local target=${2:-${H_STATE_DIR:?prepare_volume_owner requires a loaded harness profile}}
 
     local uid gid
     uid=$(id -u)
@@ -63,7 +73,7 @@ prepare_volume_owner() {
         --cap-add=DAC_OVERRIDE \
         --security-opt=no-new-privileges \
         --entrypoint /bin/bash \
-        --mount "type=volume,src=${VOLUME},dst=${H_STATE_DIR},volume-nocopy" \
+        --mount "type=volume,src=${volume},dst=${target},volume-nocopy" \
         "$IMAGE" \
         -euo pipefail -c '
             marker=$3/.owner-initialized
@@ -72,5 +82,5 @@ prepare_volume_owner() {
             rm -f "$marker"
             printf "%s:%s\n" "$1" "$2" >"$marker"
             chown "$1:$2" "$marker"
-        ' -- "$uid" "$gid" "$H_STATE_DIR"
+        ' -- "$uid" "$gid" "$target"
 }

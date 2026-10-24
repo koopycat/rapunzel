@@ -452,6 +452,7 @@
       <summary>Your host’s git can’t be turned against you.<span class="sub">Hooks and git config are read-only; other risky files are reported.</span></summary>
       <div class="more">
         <p>The agent can still commit, branch, and stash, but it can’t add a hook, set <code>core.fsmonitor</code>, or move <code>core.hooksPath</code>. Files host tools run on their own, such as <code>.envrc</code>, editor tasks, or package scripts, are hashed before the run and every change is listed when it ends.</p>
+        <p>Or run with <code>--clone</code>: the agent works on a git clone in its own volume, your checkout is never mounted, and its commits come back as <code>rapunzel-&lt;harness&gt;/*</code> branches for you to review.</p>
         <p><a href="architecture.md#46-files-the-host-runs">Architecture 4.6</a></p>
       </div>
     </details>
@@ -509,7 +510,7 @@
     <p>A sandbox you can trust is clear about its edges. These are the residual risks, most serious first.</p>
   </div>
   <ol class="limits">
-    <li><span class="sev high">high</span><div><b>Risky files outside git.</b> <span>Changes to <code>.envrc</code>, editor tasks, or package scripts are reported, not blocked. Read the report before you run those tools.</span></div></li>
+    <li><span class="sev high">high</span><div><b>Risky files outside git.</b> <span>Changes to <code>.envrc</code>, editor tasks, or package scripts are reported, not blocked. Read the report before you run those tools, or use <code>--clone</code>, which keeps the agent out of your checkout.</span></div></li>
     <li><span class="sev high">high</span><div><b>Data sent to allowed hosts.</b> <span>The agent can send anything it reads to the hosts it may reach. Every allowed host, including a runtime grant, widens that channel.</span></div></li>
     <li><span class="sev medium">medium</span><div><b>Encrypted Client Hello.</b> <span>With ECH, the outer TLS name could name an allowed host while the inner one names another site on the same CDN. Not yet verified.</span></div></li>
     <li><span class="sev medium">medium</span><div><b>Agent-volume tampering.</b> <span>Extensions, settings, and trust decisions persist and run again next session, within that project.</span></div></li>

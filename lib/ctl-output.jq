@@ -23,6 +23,8 @@ elif $view == "inspect" or $view == "config" then
   "Image: " + (.image | safe), "State volume: " + (.volume | safe),
   (if .limits then "Limits: processes " + (.limits.pids | tostring) + ", memory " +
     (if .limits.memory == null then "none" else (.limits.memory | tostring) + " bytes" end) else empty end),
+  (if .workspace then "Workspace: " + (.workspace | safe) +
+    (if .workspaceVolume then " (" + (.workspaceVolume | safe) + ")" else "" end) else empty end),
   (if $view == "config" then "Network: " + (.network | safe),
     "Egress source: " + (.egressSource | safe), "Provider env file: " + (.envFile | safe) else empty end),
   (.policy | policy),

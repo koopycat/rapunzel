@@ -19,8 +19,8 @@ Every one of these properties is checked by scripts that act as a hostile agent 
 3. **No privileges.** The agent runs as the caller's numeric UID and GID, with all capabilities dropped and `no-new-privileges` set.
 4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts, which the operator can extend per run from the host. `strict` (pi, opencode, and Claude Code) gives only fixed provider routes and no real API key.
 5. **The network boundary fails closed.** In both restricted modes the agent sits on a Docker `--internal` network with no route, no external DNS, and no host address. Anything that ignores the proxy has nowhere to go.
-6. **The host is protected from planted files.** Git hooks and git configuration are read-only inside the container, so the agent cannot make the host's git run its code. Other host-executed files are reported, not blocked.
-7. **Claims are tested, not assumed.** `verify-isolation.sh`, `verify-host-files.sh`, `verify-egress.sh`, and `verify-control.sh` probe the boundary through the real launcher. CI runs them on every change and before every image release.
+6. **The host is protected from planted files.** Git hooks and git configuration are read-only inside the container, so the agent cannot make the host's git run its code. Other host-executed files are reported, not blocked. With `--clone` the agent works on a clone in a volume instead, and nothing it writes reaches the host checkout.
+7. **Claims are tested, not assumed.** `verify-isolation.sh`, `verify-host-files.sh`, `verify-workspace.sh`, `verify-egress.sh`, and `verify-control.sh` probe the boundary through the real launcher. CI runs them on every change and before every image release.
 
 ## 1 Problem and goals
 
@@ -116,6 +116,7 @@ PROJECT_DIR (read-write)               -> /workspace
 per-project, per-harness named volume  -> profile state directory (pi: /home/agent/.pi/agent)
 ```
 
+In clone mode (section 4.7) there is no bind mount at all: `/workspace` is a volume.
 The project mount uses the caller's own UID, so files the agent creates belong to the user on the host.
 Nothing else from the host is mounted.
 In particular the harnesses' host directories, such as `~/.pi`, `~/.claude`, and `~/.codex`, stay out: they hold credentials, trust decisions, extensions that run code, and full session history from every project.
@@ -235,9 +236,21 @@ Linked worktrees and submodules keep their git directory outside the project, so
 Before the agent starts, `rapunzel` hashes files that common host tools run on their own: `.envrc`, editor tasks and settings, JetBrains run configurations, devcontainer and CI configuration, pre-commit and husky hooks, agent settings and project-local agent resources (`.pi`, `.agents`, Claude Code commands, agents, skills, and hooks), package manifests and scripts, Cargo configuration and a top-level `build.rs`, Makefiles, Nix and devenv files, and the writable parts of `.git`.
 When the agent exits, it lists every such file that was added, modified, or removed.
 
-The trade-off is deliberate: making the whole `.git` read-only would stop the agent from committing, and a clone-based workspace is a larger change (section 8).
+The trade-off is deliberate: making the whole `.git` read-only would stop the agent from committing. The clone workspace (section 4.7) removes host write access entirely for users who can do without untracked files.
 
-### 4.7 Operational details
+### 4.7 Clone workspace
+
+With `--clone` (`RAPUNZEL_WORKSPACE=clone`), `/workspace` is the `repo/` subpath of a per-project, per-harness volume holding a git clone, and the agent container has no host bind mount at all.
+History moves only as git bundles over stdin and stdout of a short-lived helper container from the harness image, with no network, no capabilities, the caller's UID, and only the workspace volume:
+
+- Before each run, the host's own git bundles the host's branches and tags; the helper clones them on the first run and afterwards only updates `refs/remotes/origin/*` and tags, so the agent's branches and working tree are untouched. Bundles are incremental after the first run; a ref list sent along with the bundle covers refs that moved without new objects.
+- After each run, the helper bundles the workspace's branches. The host validates the object IDs and ref names it receives, fetches the bundle with `transfer.fsckObjects`, and writes only `refs/remotes/rapunzel-<harness>/*`. It never runs git inside the workspace repository or reads its configuration, so hooks, `core.fsmonitor`, and tags set there stay there.
+- The host prints the new commits per branch, flags commits that touch a host-executed path (the list of section 4.6), and reports uncommitted work left in the volume. Text from the workspace is stripped of terminal control characters first.
+
+The helper's git does run in the agent-controlled repository; it overrides `core.fsmonitor` and `core.hooksPath`, and anything else the repository config triggers stays inside the networkless helper and the volume.
+Uncommitted host changes, untracked files, submodules, and LFS objects are not copied.
+
+### 4.8 Operational details
 
 - **Docker reachability.** All scripts check that the Docker engine responds before their first Docker call. If not, they print the original error, the active context or `DOCKER_HOST`, and how to start an engine or switch contexts.
 - **Terminal reset.** pi switches on the kitty keyboard protocol, mouse and focus reporting, and since version 1.0 a fullscreen alternate screen. If its own restore is lost, for example when the container is killed, the shell would receive keys as escape sequences. After every interactive session `rapunzel` pops the keyboard protocol stack, switches those modes off, and leaves the alternate screen.
@@ -251,6 +264,7 @@ The trade-off is deliberate: making the whole `.git` read-only would stop the ag
 | `test-control.sh` | Host only, no Docker: configuration inspection never starts Docker, the run registry is caller-owned and refuses symlinks, grant targets are validated, and blocked-event output is escaped and grouped correctly. | none |
 | `verify-isolation.sh` | The process is not root; `/workspace` and the volume are writable; host paths (`/Users`, `/Volumes`, host home, `~/.ssh`, `~/.pi`) are not visible; the mount table has no host home mount. | none |
 | `verify-host-files.sh` | Writing git hooks, git config, and `core.hooksPath` hooks fails; a commit still works; planted `.envrc`, editor tasks, and git attributes are reported. | none |
+| `verify-workspace.sh` | In clone mode the agent container has no bind mount; host commits arrive as `origin/*` without moving agent branches; agent commits reach the host only under `refs/remotes/rapunzel-pi/*`; planted hooks, git config, and tags stay in the workspace; terminal escapes in commit text are stripped; a commit adding `.envrc` is flagged. | none |
 | `verify-egress.sh strict` | No external DNS, direct IPv4/IPv6, metadata, or host access; the upstream is reachable only through the gateway; unknown routes get 403; the real key never reaches the agent; the agent's own credentials are replaced. | none |
 | `verify-egress.sh allowlist` | The same network checks; an allowed host works; other hosts, IP literals, a mismatched or missing SNI, plaintext tunnels, and plain HTTP are refused; private hosts need `RAPUNZEL_EGRESS_ALLOW_PRIVATE`. | internet |
 | `verify-control.sh` | Runtime grants through the real launcher and pinned Pipelock: allow and revoke take effect for new tunnels, SNI binding still holds after a policy change, concurrent operators keep each other's grants, a broken candidate is rejected before the live policy changes, a lost acknowledgement stops egress instead of reporting success, and the workload sees no policy state or Docker control channel. | internet |
@@ -277,7 +291,7 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 
 **Residual risks**, ranked:
 
-1. **Host-executed files outside git (high).** Changes to `.envrc`, editor tasks, or package scripts are reported, not blocked. A user who ignores the report and runs these tools is exposed.
+1. **Host-executed files outside git (high).** In mount mode, changes to `.envrc`, editor tasks, or package scripts are reported, not blocked. A user who ignores the report and runs these tools is exposed. Clone mode removes the direct path; a merged agent commit can still bring such a file in, which the review report flags.
 2. **Data sent through allowed hosts (high).** The agent can send anything it reads to the hosts it may reach, under the user's key. In `allowlist` mode it can also use an attacker's key on an allowed provider; `strict` mode prevents that. Every added host, including a runtime grant, widens this channel. With a `/login` subscription, a leaked refresh token stays valid after the session.
 3. **Encrypted Client Hello (medium, unverified).** With ECH, the outer SNI can name an allowed host while the inner one names another site on the same CDN. Pipelock has no ECH handling.
 4. **Agent-volume tampering (medium).** Extensions, settings, and trust decisions persist in the volume and run again in the next session.
@@ -296,13 +310,12 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 | Pipelock for `allowlist` | Squid, Smokescreen, tinyproxy | Only Pipelock refused a tunnel whose SNI differed from the CONNECT host ([D4](egress.md#d4-pipelock-as-the-allowlist-proxy)). |
 | Caddy for `strict` | iron-proxy, agent-vault, agentgateway, nginx, Envoy | Verifies upstream TLS by default, keeps secrets out of its config, needs no CA in the agent; the dedicated tools let a second auth header through ([D6](egress.md#d6-caddy-for-strict-mode)). |
 | Allowlist from host settings only | Detect logins from `auth.json` | The agent can write `auth.json` and would widen its own allowlist ([D11](egress.md#d11-login-providers-are-named-on-the-host)). |
-| Read-only git control files plus a report | Whole `.git` read-only, or a clone-based workspace | Keeps commits working; the clone is planned (section 8). |
+| Read-only git control files plus a report by default, a clone workspace on request | Whole `.git` read-only | Keeps commits working in mount mode; the clone workspace (section 4.7) trades untracked files and live edits for no host write access. |
 
 ## 8 Limitations and future work
 
-- **Docker Desktop and nested mounts.** On Docker Desktop 4.93 for macOS, the virtual machine shut down twice shortly after containers with the read-only git sub-mounts. The same mounts work on Colima and Linux. The cause is not confirmed. A fallback that hashes and restores git control files instead of mounting them would avoid nested mounts on Docker Desktop.
+- **Docker Desktop and nested mounts.** On Docker Desktop 4.93 for macOS, the virtual machine shut down twice shortly after containers with the read-only git sub-mounts. The same mounts work on Colima and Linux. The cause is not confirmed. The clone workspace (`--clone`) uses no bind mount and avoids them.
 - **WSL2** has not been tested.
-- **Clone-based workspace.** Letting the agent work in a container-local clone, and fetching its commits on the host for review, would close the host-executed-file risk without relying on reports.
 - **Other harnesses.** Claude Code is a profile (`profiles/claude`) with `open`, `allowlist`, and `strict` egress; in strict mode its bootstrap writes Claude Code's documented LLM-gateway settings (base URL plus placeholder) into the volume's `settings.json` ([D15](egress.md#d15-claude-code-through-the-credential-gateway)). Codex CLI is a profile (`profiles/codex`) with `open` and `allowlist` egress; its own bubblewrap sandbox cannot run in the container, so it runs with `sandbox_mode = "danger-full-access"` inside rapunzel's boundary. DeepSeek Harness is a profile (`profiles/dsh`) whose default command is a web UI: the launcher publishes it on the host's `127.0.0.1` only, in `open` mode only, because Docker cannot publish ports from the `--internal` network of the restricted modes; reaching it through the sidecar would lift that limit. opencode is a profile (`profiles/opencode`) with `open` and `allowlist` egress; it has no single home variable, so its image points the four XDG base directories into the volume and the profile leaves `H_STATE_ENV` empty. Its bootstrap turns pi's custom-provider variables into an opencode provider, listing the endpoint's models at startup, in a rapunzel-owned file that the image loads through `OPENCODE_CONFIG`; the user's own `opencode.json` is never edited, and the key appears only as an `{env:...}` reference. In `strict` mode the same file points the custom provider and the built-in `anthropic` and `openai` providers at the credential gateway with the placeholder key, so opencode, like pi, never holds a real key. Copilot CLI would plug into the same launcher as a further profile. Copilot needs `api.github.com`, which exposes GitHub's whole API, so it should be opt-in.
 - **Reproducible builds.** Pinning pi's transitive dependencies would remove risk 6.
 
@@ -313,6 +326,7 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 | `RAPUNZEL_HARNESS` | Harness profile (default `pi`); `--harness` or a `rapunzel-<harness>` link does the same. |
 | `RAPUNZEL_IMAGE` | Image to run (default: the profile's image, `rapunzel` for pi, `rapunzel:<harness>` otherwise). |
 | `RAPUNZEL_VOLUME` | Use a named volume instead of the per-project one. |
+| `RAPUNZEL_WORKSPACE` | `mount` (default) or `clone`; `--clone` does the same. |
 | `RAPUNZEL_ENV_FILE` | Env file with provider settings and secrets; filtered by the allowlist (default `~/.config/rapunzel/<harness>.env` when it exists; empty for none). |
 | `RAPUNZEL_NETWORK` | Docker network for `open` mode (default `bridge`; `none` for offline). |
 | `RAPUNZEL_PORT` | Host port for a harness web UI on `127.0.0.1` (dsh, default 3080). |
@@ -338,11 +352,12 @@ The [guide](guide.md) explains each setting with examples.
 | `lib/egress.sh` | Per-run networks, Pipelock and Caddy sidecars, allowlist construction. |
 | `rapunzel-ctl`, `lib/control.{sh,jq}`, `lib/ctl-output.{sh,jq}`, `lib/runs.sh`, `lib/policy.sh` | Host-side run discovery, safe text/JSON, grouped history, shared startup policy, and confirmed runtime grants. |
 | `lib/host-files.sh` | Read-only git mounts, snapshots, and the change report. |
+| `lib/workspace.sh` | Clone workspace: helper container, bundles in both directions, ref validation, and the review report. |
 | `lib/docker.sh` | Docker reachability check and building a missing harness image. |
 | `Dockerfile`, `lib/prune-foreign-platforms.mjs` | Image: shared base stage, then one final stage per harness (pi is the default); foreign-platform binaries pruned in the install layer. |
 | `bootstrap.sh`, `setup-identity.sh`, `rapunzel-shell` | Entrypoint: identity, then the harness's bootstrap script, then the harness or a shell. |
 | `profiles/<harness>/profile.sh`, `profiles/<harness>/bootstrap.mjs`, `lib/profile.sh` | Harness profile: command, state directory, environment names, egress hosts, bootstrap. Data only; the launcher enforces everything. |
 | `rapunzel-ext` | Curated extensions from the host into a project's volume. |
-| `test.sh`, `test-control.sh`, `verify-isolation.sh`, `verify-isolation-inner.sh`, `verify-host-files.sh`, `verify-egress.sh`, `verify-control.sh`, `lib/egress-probe.mjs` | Checks. |
+| `test.sh`, `test-control.sh`, `verify-isolation.sh`, `verify-isolation-inner.sh`, `verify-host-files.sh`, `verify-workspace.sh`, `verify-egress.sh`, `verify-control.sh`, `lib/egress-probe.mjs` | Checks. |
 | `docs/egress.md` | Egress decision records and evidence. |
 | `docs/guide.md` | User guide. |

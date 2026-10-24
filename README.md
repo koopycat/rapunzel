@@ -125,6 +125,10 @@ All run selectors accept a unique prefix of at least eight characters. Output is
 
 Runtime grants work in `allowlist` mode only, take exact host names, and last for the current run. The agent retries after approval; the rejected request is not resumed. Private-address protection remains enabled. Revoke removes a runtime grant for **new tunnels**, not an existing connection or a startup allowance. Allowing a host permits uploads as well as downloads. See [runtime egress control](docs/guide.md#runtime-egress-control) for failure handling and limits.
 
+### Work on a clone instead of your checkout
+
+`rapunzel --clone` gives the agent a git clone in its own volume instead of your checkout. Its commits come back as `rapunzel-<harness>/<branch>` remote-tracking branches for you to review and merge, with a warning for every commit that touches files the host runs on its own; nothing the agent writes reaches your checkout. See the [clone workspace guide](docs/guide.md#clone-workspace).
+
 ### Isolation
 
 - Each project gets its own persistent Docker volume for the agent's settings, login credentials, sessions, trust decisions, and installed extensions.

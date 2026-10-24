@@ -23,12 +23,15 @@ source "${SCRIPT_DIR}/lib/profile.sh"
 source "${SCRIPT_DIR}/lib/policy.sh"
 # shellcheck source=lib/runs.sh
 source "${SCRIPT_DIR}/lib/runs.sh"
+# shellcheck source=lib/workspace.sh
+source "${SCRIPT_DIR}/lib/workspace.sh"
 
 usage() {
     cat >&2 <<'EOF'
-Usage: rapunzel [--harness NAME] [--shell] [PROJECT_DIR [harness arguments...]]
-       rapunzel-NAME [--shell] [PROJECT_DIR [harness arguments...]]
-       rapunzel [--harness NAME] --exec PROJECT_DIR COMMAND [ARGS...]
+Usage: rapunzel [--harness NAME] [--clone] [--shell] [PROJECT_DIR [harness arguments...]]
+       rapunzel-NAME [--clone] [--shell] [PROJECT_DIR [harness arguments...]]
+       rapunzel [--harness NAME] [--clone] --exec PROJECT_DIR COMMAND [ARGS...]
+       rapunzel [--harness NAME] --fetch [PROJECT_DIR]
 
 PROJECT_DIR defaults to the current directory. Harness arguments need an
 explicit PROJECT_DIR in front of them, for example: rapunzel . --continue
@@ -38,13 +41,18 @@ after updating the checkout, for example: docker build -t rapunzel .
 
 Options:
   --harness NAME          Harness profile to run (default: pi, see profiles/)
+  --clone                 Work on a git clone in a volume instead of the host
+                          checkout; the agent's branches come back as
+                          refs/remotes/rapunzel-NAME/* (RAPUNZEL_WORKSPACE=clone).
   --shell                 Open an interactive bash with the same mounts and env.
   --exec                  Run COMMAND instead of the harness, with the same mounts and env.
   --config                Print redacted effective configuration without starting Docker.
+  --fetch                 Fetch the clone workspace's branches without starting the harness.
   -h, --help              Show this help.
 
 Environment:
   RAPUNZEL_HARNESS        Harness profile (default: pi)
+  RAPUNZEL_WORKSPACE      mount (default) or clone
   RAPUNZEL_IMAGE          Image name (default: the profile's image)
   RAPUNZEL_VOLUME         Agent volume (default: per-project volume)
   RAPUNZEL_ENV_FILE       Docker env-file with runtime secrets (default:
@@ -83,9 +91,20 @@ if [[ "${1:-}" == --harness ]]; then
 fi
 load_profile "$HARNESS" || exit 2
 
+WORKSPACE_MODE=${RAPUNZEL_WORKSPACE:-mount}
+if [[ "${1:-}" == --clone ]]; then
+    WORKSPACE_MODE=clone
+    shift
+fi
+if [[ "$WORKSPACE_MODE" != mount && "$WORKSPACE_MODE" != clone ]]; then
+    printf 'rapunzel: RAPUNZEL_WORKSPACE must be mount or clone, got: %s\n' "$WORKSPACE_MODE" >&2
+    exit 2
+fi
+
 SHELL_MODE=false
 EXEC_MODE=false
 CONFIG_MODE=false
+FETCH_MODE=false
 case "${1:-}" in
     -h | --help) usage 0 ;;
     --shell)
@@ -99,6 +118,11 @@ case "${1:-}" in
         ;;
     --config)
         CONFIG_MODE=true
+        shift
+        ;;
+    --fetch)
+        FETCH_MODE=true
+        WORKSPACE_MODE=clone
         shift
         ;;
 esac
@@ -124,10 +148,19 @@ if [[ "$CONFIG_MODE" == true && $# -gt 0 ]]; then
     printf 'rapunzel: --config does not accept harness arguments\n' >&2
     exit 2
 fi
+if [[ "$FETCH_MODE" == true && $# -gt 0 ]]; then
+    printf 'rapunzel: --fetch does not accept harness arguments\n' >&2
+    exit 2
+fi
 PROJECT_DIR=$(cd -- "$PROJECT_INPUT" && pwd -P)
 
 IMAGE=${RAPUNZEL_IMAGE:-$H_IMAGE}
 VOLUME=${RAPUNZEL_VOLUME:-$(project_volume_name "$PROJECT_DIR" "$H_NAME")}
+WORKSPACE_VOLUME=""
+if [[ "$WORKSPACE_MODE" == clone ]]; then
+    workspace_require_repo "$PROJECT_DIR" || exit 1
+    WORKSPACE_VOLUME=$(workspace_volume_name "$PROJECT_DIR" "$H_NAME")
+fi
 NETWORK=${RAPUNZEL_NETWORK:-bridge}
 EGRESS=${RAPUNZEL_EGRESS:-open}
 if [[ -n "${RAPUNZEL_EGRESS_ALLOW_PRIVATE:-}" && "$EGRESS" != allowlist ]]; then
@@ -217,10 +250,20 @@ if [[ "$CONFIG_MODE" != true ]]; then
     require_docker rapunzel
     ensure_image rapunzel "$IMAGE" "$H_NAME" "$SCRIPT_DIR"
 fi
+if [[ "$FETCH_MODE" == true ]]; then
+    workspace_volume_exists || {
+        printf 'rapunzel: there is no clone workspace for %s (%s) yet; start one with rapunzel --clone\n' \
+            "$PROJECT_DIR" "$H_NAME" >&2
+        exit 1
+    }
+    workspace_fetch
+    exit
+fi
 
 filtered_env=""
 egress_dir=""
 host_files_before=""
+workspace_seeded=false
 tty_used=false
 # Undo terminal modes the agent may leave behind when its own restore is lost
 # or unbalanced: the kitty keyboard protocol stack (otherwise the shell gets
@@ -250,6 +293,7 @@ cleanup() {
         host_files_report "$host_files_before" "$host_files_after"
         rm -f "$host_files_before" "$host_files_after"
     fi
+    [[ "$workspace_seeded" != true ]] || workspace_fetch
 }
 trap cleanup EXIT
 
@@ -258,6 +302,10 @@ trap cleanup EXIT
 if [[ "$CONFIG_MODE" != true ]]; then
     prepare_volume_owner
     run_register
+    if [[ "$WORKSPACE_MODE" == clone ]]; then
+        workspace_seed
+        workspace_seeded=true
+    fi
 fi
 
 args=(
@@ -273,7 +321,6 @@ args=(
     --security-opt=no-new-privileges
     --cap-drop=ALL
     --pids-limit "$PIDS_LIMIT"
-    --mount "type=bind,src=${PROJECT_DIR},dst=/workspace"
     --mount "type=volume,src=${VOLUME},dst=${H_STATE_DIR},volume-nocopy"
     --env HOME=/home/agent
     --env "RAPUNZEL_STATE_DIR=${H_STATE_DIR}"
@@ -290,10 +337,16 @@ fi
 if [[ "$host_tz" =~ ^:?[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]]; then
     args+=(--env "TZ=${host_tz#:}")
 fi
-# Git config and hooks stay read-only, so the harness can commit but cannot plant
-# anything the host's git would run.
-[[ "$CONFIG_MODE" == true ]] || host_files_mounts "$PROJECT_DIR"
-args+=(${HOST_FILE_MOUNTS[@]+"${HOST_FILE_MOUNTS[@]}"})
+if [[ "$WORKSPACE_MODE" == clone ]]; then
+    # No host path at all: the clone lives in repo/ of the workspace volume.
+    args+=(--mount "type=volume,src=${WORKSPACE_VOLUME},dst=/workspace,volume-subpath=repo")
+else
+    args+=(--mount "type=bind,src=${PROJECT_DIR},dst=/workspace")
+    # Git config and hooks stay read-only, so the harness can commit but cannot
+    # plant anything the host's git would run.
+    [[ "$CONFIG_MODE" == true ]] || host_files_mounts "$PROJECT_DIR"
+    args+=(${HOST_FILE_MOUNTS[@]+"${HOST_FILE_MOUNTS[@]}"})
+fi
 
 # Runtime environment policy: only allowlisted names may enter the container.
 # This stops a mistaken or untrusted env file from injecting loader/interpreter
@@ -533,9 +586,12 @@ fi
 args+=(--network "$NETWORK")
 run_publish
 
-# Changes to host-executed files are reported when the harness exits.
-host_files_before=$(mktemp "${TMPDIR:-/tmp}/rapunzel-files.XXXXXX")
-host_files_snapshot "$PROJECT_DIR" "$host_files_before"
+# Changes to host-executed files are reported when the harness exits. A clone
+# workspace cannot change the host checkout; its commits are reported instead.
+if [[ "$WORKSPACE_MODE" == mount ]]; then
+    host_files_before=$(mktemp "${TMPDIR:-/tmp}/rapunzel-files.XXXXXX")
+    host_files_snapshot "$PROJECT_DIR" "$host_files_before"
+fi
 
 if [[ -t 0 && -t 1 ]]; then
     args+=(--interactive --tty)

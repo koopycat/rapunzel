@@ -16,7 +16,7 @@ config() {
     env -u RAPUNZEL_HARNESS -u RAPUNZEL_NETWORK -u RAPUNZEL_API_KEY_VARIABLE -u RAPUNZEL_API_BASE_URL \
         -u RAPUNZEL_BASE_URL -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
         -u RAPUNZEL_EGRESS_ALLOW -u RAPUNZEL_EGRESS_ALLOW_PRIVATE -u RAPUNZEL_EGRESS_LOGINS \
-        -u RAPUNZEL_BASE_URL_VARIABLE -u RAPUNZEL_PIDS_LIMIT -u RAPUNZEL_MEMORY PATH="$test_dir/bin:$PATH" RAPUNZEL_ENV_FILE= "$@" \
+        -u RAPUNZEL_BASE_URL_VARIABLE -u RAPUNZEL_PIDS_LIMIT -u RAPUNZEL_MEMORY -u RAPUNZEL_WORKSPACE PATH="$test_dir/bin:$PATH" RAPUNZEL_ENV_FILE= "$@" \
         "$ROOT/rapunzel-ctl" config "$test_dir/project" --harness pi
 }
 
@@ -61,6 +61,19 @@ jq -e '.limits == {pids: 8192, memory: 8589934592}' <<<"$output" >/dev/null
 for setting in RAPUNZEL_PIDS_LIMIT=unlimited RAPUNZEL_PIDS_LIMIT=10 RAPUNZEL_MEMORY=lots RAPUNZEL_MEMORY=1m; do
     if config "$setting" >/dev/null 2>&1; then exit 1; fi
 done
+
+# Workspace mode: only mount or clone, and clone needs a repository with a
+# commit, checked before Docker. The report names the workspace volume.
+jq -e '.workspace == "mount" and .workspaceVolume == null' <<<"$(config)" >/dev/null
+if config RAPUNZEL_WORKSPACE=copy >/dev/null 2>&1; then exit 1; fi
+if config RAPUNZEL_WORKSPACE=clone >/dev/null 2>&1; then exit 1; fi
+git init --quiet "$test_dir/repo"
+if PATH="$test_dir/bin:$PATH" RAPUNZEL_ENV_FILE='' RAPUNZEL_WORKSPACE=clone \
+    "$ROOT/rapunzel-ctl" config "$test_dir/repo" >/dev/null 2>&1; then exit 1; fi
+git -C "$test_dir/repo" -c user.name=test -c user.email=test@example.invalid commit --quiet --allow-empty -m base
+output=$(PATH="$test_dir/bin:$PATH" RAPUNZEL_ENV_FILE='' RAPUNZEL_WORKSPACE=clone \
+    "$ROOT/rapunzel-ctl" config "$test_dir/repo" --harness pi)
+jq -e '.workspace == "clone" and (.workspaceVolume | test("^rapunzel-pi-[0-9a-f]{12}-workspace$"))' <<<"$output" >/dev/null
 
 # The control registry itself must not be agent-writable or follow a final
 # symlink. These tests do not create or inspect any Docker resource.
