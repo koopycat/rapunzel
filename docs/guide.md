@@ -288,8 +288,8 @@ The project's `opencode.json` and `.opencode/` are in the [host-file report](#fi
 
 Egress:
 
-- `allowlist` adds `api.anthropic.com` and `api.openai.com` through their keys; allow any other provider's API host with `RAPUNZEL_EGRESS_ALLOW` (opencode Zen: `opencode.ai`). opencode honors `HTTPS_PROXY`. A login needs its sign-in hosts too, through `RAPUNZEL_EGRESS_LOGINS` or `RAPUNZEL_EGRESS_ALLOW`. In the restricted modes, `OPENCODE_DISABLE_MODELS_FETCH=1` keeps opencode on its bundled model catalog instead of fetching models.dev, and `OPENCODE_DISABLE_LSP_DOWNLOAD=1` stops language-server downloads that would fail.
-- `strict` works with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and a custom provider. The bootstrap points opencode's built-in `anthropic` and `openai` providers at the gateway's `/anthropic/v1` and `/openai/v1` routes, and the custom provider at `/custom` (the launcher rewrites `RAPUNZEL_API_BASE_URL` and the key variable), all with the placeholder key `rapunzel-gateway`; the gateway sends the real key upstream. The custom provider's model list is fetched through the gateway too. `OPENCODE_CONFIG_CONTENT` is not passed in this mode, because it can carry a key; other providers, opencode Zen, and logins from `opencode auth login` have no route. The bootstrap warns when `auth.json` in the volume still holds logins.
+- `allowlist` adds the API host of each built-in provider whose key is set (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY`); allow any other provider's API host with `RAPUNZEL_EGRESS_ALLOW` (opencode Zen: `opencode.ai`). opencode honors `HTTPS_PROXY`. A login needs its sign-in hosts too, through `RAPUNZEL_EGRESS_LOGINS` or `RAPUNZEL_EGRESS_ALLOW`. In the restricted modes, `OPENCODE_DISABLE_MODELS_FETCH=1` keeps opencode on its bundled model catalog instead of fetching models.dev, and `OPENCODE_DISABLE_LSP_DOWNLOAD=1` stops language-server downloads that would fail.
+- `strict` works with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and a custom provider; the gateway's other provider routes are wired up for pi only so far. The bootstrap points opencode's built-in `anthropic` and `openai` providers at the gateway's `/anthropic/v1` and `/openai/v1` routes, and the custom provider at `/custom` (the launcher rewrites `RAPUNZEL_API_BASE_URL` and the key variable), all with the placeholder key `rapunzel-gateway`; the gateway sends the real key upstream. The custom provider's model list is fetched through the gateway too. `OPENCODE_CONFIG_CONTENT` is not passed in this mode, because it can carry a key; other providers, opencode Zen, and logins from `opencode auth login` have no route. The bootstrap warns when `auth.json` in the volume still holds logins.
 
 ### Custom provider for opencode
 
@@ -706,15 +706,21 @@ The gateway serves only fixed routes and answers everything else with `403`:
 |---|---|---|---|
 | `/anthropic/*` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY`, or for Claude Code `CLAUDE_CODE_OAUTH_TOKEN` (the API key wins) | `x-api-key` for the key, `Authorization: Bearer` for the token |
 | `/openai/*` | `https://api.openai.com` | `OPENAI_API_KEY` | `Authorization: Bearer` |
+| `/openrouter/*` | `https://openrouter.ai/api` (`/v1/*`) or `/api/v1` (everything else) | `OPENROUTER_API_KEY` | `Authorization: Bearer` |
+| `/google/*` | `https://generativelanguage.googleapis.com` | `GEMINI_API_KEY` | `x-goog-api-key` |
+| `/groq/*` | `https://api.groq.com/openai` | `GROQ_API_KEY` | `Authorization: Bearer` |
+| `/mistral/*` | `https://api.mistral.ai` | `MISTRAL_API_KEY` | `Authorization: Bearer` |
+| `/deepseek/*` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `Authorization: Bearer` |
+| `/xai/*` | `https://api.x.ai` | `XAI_API_KEY` | `Authorization: Bearer` |
 | `/custom/*` | `RAPUNZEL_API_BASE_URL` | `RAPUNZEL_API_KEY` or `RAPUNZEL_API_KEY_VARIABLE` | `x-api-key` for `anthropic-messages`, otherwise `Authorization: Bearer` |
 
-The gateway always overwrites these headers and removes the other one, so pi cannot use an allowed provider with a credential of its own, for example to upload data to a provider's file API under an attacker's account.
+The gateway always overwrites the route's header, removes the other credential headers (`Authorization`, `x-api-key`, `x-goog-api-key`), and drops a `key` query parameter, so pi cannot use an allowed provider with a credential of its own, for example to upload data to a provider's file API under an attacker's account.
 Requests and responses are otherwise passed through unchanged and streamed without buffering.
 Credentials can come from the host environment or from `RAPUNZEL_ENV_FILE`; the gateway reads them from a temporary env-file that is deleted after the run.
 
 Limitations of strict mode:
 
-- Only the three routes above are supported. Other provider keys, `RAPUNZEL_HEADERS_JSON`, and proxy variables are not passed, and `rapunzel` names them in a warning.
+- Only the routes above are supported; the provider table lives in `GATEWAY_BUILTINS` in `lib/egress.sh`. Other provider keys, `RAPUNZEL_HEADERS_JSON`, and proxy variables are not passed, and `rapunzel` names them in a warning.
 - Credentials stored with `/login` live in `auth.json` inside the agent volume, where the gateway cannot protect them. The bootstrap warns when `auth.json` is not empty; run `/logout` to remove them.
 
 ### Extension providers
