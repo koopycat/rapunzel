@@ -91,7 +91,7 @@ if [[ "$H_NAME" == pi ]]; then
     run node -e '
         const { createRequire } = require("node:module");
         const fs = require("node:fs"), path = require("node:path");
-        const piPackage = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/package.json";
+        const piPackage = "/usr/local/lib/pi/node_modules/@earendil-works/pi-coding-agent/package.json";
         const { createJiti } = createRequire(piPackage)("jiti");
         const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "rapunzel-typescript-"));
         const file = path.join(dir, "probe.ts");

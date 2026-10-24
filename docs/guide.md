@@ -27,11 +27,7 @@ Build the image with the pinned pi version (currently `1.4.0`):
 docker build --pull -t rapunzel .
 ```
 
-To choose a different published version explicitly:
-
-```bash
-docker build --pull --build-arg PI_VERSION=1.4.0 -t rapunzel .
-```
+pi and its whole dependency tree are locked in `profiles/pi/package-lock.json`, so every build installs the same, integrity-checked packages.
 
 Put this checkout on your `PATH`, for example in `~/.zshrc` or `~/.bashrc`:
 
@@ -507,11 +503,15 @@ The host project and host home should have no corresponding session file.
 
 ## Updating pi
 
-The image pins pi at the `PI_VERSION` build argument's value.
-Rebuild with a deliberate version change:
+The image installs pi from `profiles/pi/package.json` and its lockfile, which pin pi and every transitive dependency.
+Renovate proposes updates to both together.
+To change the version by hand, update the lock and rebuild:
 
 ```bash
-docker build --pull --build-arg PI_VERSION=1.4.0 -t rapunzel .
+cd profiles/pi
+npm install --package-lock-only --ignore-scripts @earendil-works/pi-coding-agent@<version>
+cd ../..
+docker build --pull -t rapunzel .
 ```
 
 The other harnesses pin their versions the same way, with `CLAUDE_VERSION`, `CODEX_VERSION`, `DSH_VERSION`, and `OPENCODE_VERSION` (see the `ARG` lines in the `Dockerfile` for the current pins; Renovate proposes updates weekly):

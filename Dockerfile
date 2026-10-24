@@ -167,15 +167,22 @@ CMD ["opencode"]
 # ---------------------------------------------------------------------------
 FROM base AS pi
 
-ARG PI_PACKAGE=@earendil-works/pi-coding-agent
-ARG PI_VERSION=1.4.0
-
+# pi and every transitive dependency come from profiles/pi/package-lock.json,
+# with integrity hashes, so a build installs exactly the reviewed tree instead
+# of whatever the registry resolves to that day. Renovate updates the pin and
+# the lockfile together. Root-owned, so the runtime user cannot modify pi.
 # Separate layer so pi upgrades do not re-run apt and vice versa. Pruning must
 # happen in this same layer, or the foreign-platform binaries stay in the image.
-RUN --mount=type=bind,source=lib/prune-foreign-platforms.mjs,target=/tmp/prune-foreign-platforms.mjs \
+RUN --mount=type=bind,source=profiles/pi/package.json,target=/tmp/pi/package.json \
+    --mount=type=bind,source=profiles/pi/package-lock.json,target=/tmp/pi/package-lock.json \
+    --mount=type=bind,source=lib/prune-foreign-platforms.mjs,target=/tmp/prune-foreign-platforms.mjs \
     --mount=type=cache,target=/root/.npm \
-    npm install -g --ignore-scripts "${PI_PACKAGE}@${PI_VERSION}" \
-    && node /tmp/prune-foreign-platforms.mjs "$(npm root -g)"
+    mkdir -p /usr/local/lib/pi \
+    && cp /tmp/pi/package.json /tmp/pi/package-lock.json /usr/local/lib/pi/ \
+    && npm ci --prefix /usr/local/lib/pi --ignore-scripts --omit=dev --no-audit --no-fund \
+    && node /tmp/prune-foreign-platforms.mjs /usr/local/lib/pi/node_modules \
+    && ln -s /usr/local/lib/pi/node_modules/.bin/pi /usr/local/bin/pi \
+    && PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 pi --version
 
 # /home/agent/.pi is mode 1777 because extensions write caches such as
 # ~/.pi/cache there as the caller's UID. The state directory is the volume mount.
