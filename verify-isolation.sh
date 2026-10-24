@@ -40,7 +40,7 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || {
 }
 # The named agent volume is created root-owned and mounted with volume-nocopy,
 # so its ownership must be prepared for the invoking UID/GID on every platform.
-prepare_volume_owner
+prepare_volume_owner "$VOLUME" "$H_STATE_DIR"
 
 # Use the same two mounts as rapunzel, with no host HOME or environment file.
 # volume-nocopy prevents Docker from copying image seed files into the named volume.

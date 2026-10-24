@@ -32,7 +32,7 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || {
     exit 1
 }
 
-prepare_volume_owner
+prepare_volume_owner "$VOLUME" "$H_STATE_DIR"
 
 # Extra docker run options (such as --env) for the next run_env call.
 RUN_OPTS=()

@@ -96,7 +96,7 @@ find "$staging" -name '._*' -delete
 
 # Once prepared, the volume belongs to the caller's UID/GID, so the copy runs
 # as that user with no capabilities. Existing unrelated extensions are preserved.
-prepare_volume_owner
+prepare_volume_owner "$VOLUME" "$H_STATE_DIR"
 
 docker run --rm --user "$(id -u):$(id -g)" --network none --cap-drop=ALL --security-opt=no-new-privileges \
     --mount "type=bind,src=${staging},dst=/source,readonly" \

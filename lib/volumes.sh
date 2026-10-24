@@ -46,14 +46,13 @@ workspace_volume_name() {
 # creates the volume on first use. Preparation is one short-lived container that
 # only reads a marker file once the volume is prepared for this exact owner.
 #
-# Requires IMAGE, VOLUME, and H_STATE_DIR (see lib/profile.sh) to be set, or
-# takes another volume and its mount point as arguments. Must be invoked as a
-# non-root user.
+# Takes the volume and its mount point as arguments and requires IMAGE to be
+# set. Must be invoked as a non-root user.
 
 prepare_volume_owner() {
     : "${IMAGE:?prepare_volume_owner requires IMAGE to be set}"
-    local volume=${1:-${VOLUME:?prepare_volume_owner requires VOLUME to be set}}
-    local target=${2:-${H_STATE_DIR:?prepare_volume_owner requires a loaded harness profile}}
+    local volume=${1:?prepare_volume_owner requires a volume name}
+    local target=${2:?prepare_volume_owner requires a mount point}
 
     local uid gid
     uid=$(id -u)
