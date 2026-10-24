@@ -10,8 +10,10 @@ set -Eeuo pipefail
 #   RAPUNZEL_EGRESS_LOGINS=openai-codex). Both are Cloudflare-hosted names,
 #   which also exercises SNI-mismatch refusal.
 # strict needs none: an echo server stands in for the provider.
+# strict-tools needs internet: strict with RAPUNZEL_EGRESS_ALLOW, an echo
+#   server behind the gateway and a real tunnel to registry.npmjs.org.
 #
-# Usage: ./verify-egress.sh [allowlist|strict]...   (default: both)
+# Usage: ./verify-egress.sh [allowlist|strict|strict-tools]...   (default: all)
 
 SCRIPT_PATH=${BASH_SOURCE[0]}
 # Follow symlinks so a link on PATH still finds lib/ in the checkout.
@@ -29,7 +31,7 @@ OPENCODE_IMAGE=${RAPUNZEL_OPENCODE_IMAGE:-rapunzel:opencode}
 CLAUDE_IMAGE=${RAPUNZEL_CLAUDE_IMAGE:-rapunzel:claude}
 VOLUME=${RAPUNZEL_VOLUME:-rapunzel-egress-check}
 MODES=("$@")
-[[ ${#MODES[@]} -gt 0 ]] || MODES=(allowlist strict)
+[[ ${#MODES[@]} -gt 0 ]] || MODES=(allowlist strict strict-tools)
 
 require_docker verify-egress.sh
 docker image inspect "$IMAGE" >/dev/null 2>&1 || {
@@ -265,6 +267,48 @@ check_strict() {
     docker rm --force "$upstream" >/dev/null 2>&1 || true
 }
 
+# strict with RAPUNZEL_EGRESS_ALLOW: tools reach the allowed host through
+# Pipelock, model traffic still goes only through the gateway with the real key
+# outside the agent, and a provider API host is not reachable through the proxy.
+check_strict_tools() {
+    printf '== strict with a tool allowlist (Caddy gateway plus Pipelock, needs internet)\n'
+    local secret port bridge_gateway output env_line echo_line
+    secret="pd-secret-$(random_token)"
+
+    start_echo || return
+    probe_args=(strict-allowlist "$bridge_gateway" "$port" "$canary_port" registry.npmjs.org api.openai.com)
+    output=$(probe RAPUNZEL_EGRESS=strict \
+        RAPUNZEL_EGRESS_ALLOW=registry.npmjs.org \
+        RAPUNZEL_PROVIDER=echo \
+        RAPUNZEL_MODEL=echo-model \
+        RAPUNZEL_API=openai-completions \
+        RAPUNZEL_API_BASE_URL="http://${bridge_gateway}:${port}/v1" \
+        RAPUNZEL_API_KEY_VARIABLE=EXAMPLE_API_KEY \
+        EXAMPLE_API_KEY="$secret")
+    expect_checks "$output" 24
+
+    env_line=$(section "$output" ENV)
+    echo_line=$(section "$output" ECHO)
+    [[ -n "$env_line" && -n "$echo_line" ]] || fail "probe output is incomplete"
+    [[ "$env_line" != *"$secret"* ]] || fail "a real credential reached the agent environment"
+    [[ "$env_line" == *'"HTTPS_PROXY":"http://egress:8888"'* ]] || fail "HTTPS_PROXY is not set to the tool proxy"
+    [[ "$env_line" == *'"NO_PROXY":"llm-proxy"'* ]] || fail "NO_PROXY does not exempt the gateway"
+    [[ "$env_line" != *'"HTTP_PROXY"'* ]] || fail "HTTP_PROXY is set; plain http:// should have no route"
+    [[ "$echo_line" == *"\"authorization\":\"Bearer ${secret}\""* ]] ||
+        fail "the gateway did not send the real key upstream"
+    docker rm --force "$upstream" >/dev/null 2>&1 || true
+
+    # An allowlist entry that covers a provider API host is refused up front.
+    printf '== strict refuses a provider API host in RAPUNZEL_EGRESS_ALLOW\n'
+    if output=$(probe RAPUNZEL_EGRESS=strict ANTHROPIC_API_KEY=sk-dummy RAPUNZEL_EGRESS_ALLOW='*.anthropic.com' 2>&1); then
+        fail "strict mode started with *.anthropic.com in RAPUNZEL_EGRESS_ALLOW"
+    elif [[ "$output" == *'covers the provider API host api.anthropic.com'* ]]; then
+        printf 'PASS refused *.anthropic.com\n'
+    else
+        fail "unexpected refusal message: ${output}"
+    fi
+}
+
 # opencode in strict mode: its bootstrap must route the custom provider and the
 # built-in anthropic provider through the gateway with the placeholder key,
 # list the custom models through it, and keep every real key out of the
@@ -400,8 +444,9 @@ for mode in "${MODES[@]}"; do
                 printf '== strict with the claude harness: skipped, %s is not built\n' "$CLAUDE_IMAGE"
             fi
             ;;
+        strict-tools) check_strict_tools ;;
         *)
-            printf 'Usage: %s [allowlist|strict]...\n' "$0" >&2
+            printf 'Usage: %s [allowlist|strict|strict-tools]...\n' "$0" >&2
             exit 2
             ;;
     esac

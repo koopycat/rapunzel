@@ -289,7 +289,7 @@ Accepted-generation reconciliation scans all retained sidecar logs; fresh acknow
 
 The unreleased controller uses text on a terminal and JSON when redirected, with explicit format overrides. Selection accepts unique 8–24-character prefixes in the caller's registry, counts stale/foreign collisions as ambiguous, freezes the full ID, and revalidates before mutation. Discovery lists only verified registry-backed live agents on the selected daemon. No implicit newest/project selection is made. One hostname grammar (including DNS length bounds) validates policy entries and event candidates; no raw rejected hostname is echoed to a terminal. `pending` is a versioned grouped snapshot with current policy coverage and observed event counts/ports/times; `watch` remains a sanitized stream. Neither is an approval authority or proof of successful connectivity.
 
-Grants last only for this run, are not single-request approvals, and permit uploads as well as downloads. Revocation affects new tunnels only and cannot override startup wildcard grants. Existing tunnels may continue. `pending` is bounded block-log history, not a request-holding queue. Strict mode remains provider-only.
+Grants last only for this run, are not single-request approvals, and permit uploads as well as downloads. Revocation affects new tunnels only and cannot override startup wildcard grants. Existing tunnels may continue. `pending` is bounded block-log history, not a request-holding queue. Strict mode takes no runtime grants; its tool hosts are fixed at startup ([D17](#d17-strict-mode-with-a-tool-allowlist)).
 
 ### D15: Claude Code through the credential gateway
 
@@ -319,6 +319,22 @@ The agent controls its own TLS client, so turning ECH off there does not help. T
 **Limits.**
 Any future refusal would also refuse ECH GREASE, which uses the same extension type; Node, curl, and Go send none by default. Whether a CDN honors an ECH hello whose outer name is an arbitrary customer domain is not tested and does not change the decision.
 
+### D17: Strict mode with a tool allowlist
+
+**Decision.**
+In `strict` mode, `RAPUNZEL_EGRESS_ALLOW` starts Pipelock next to the Caddy gateway, with exactly the configuration `allowlist` mode uses, and gives the agent `HTTPS_PROXY` for it.
+Model traffic keeps going to the gateway over plain `http://llm-proxy:8080`, which `HTTPS_PROXY` never covers; `NO_PROXY=llm-proxy` makes that explicit.
+The launcher refuses an entry that equals or covers (`*.`) a built-in provider's API host or the custom provider's host.
+
+**Why.**
+Without it, a task that installs packages forced a choice: `allowlist`, where the agent holds the real key, or `strict`, where nothing but the model is reachable.
+Refusing provider hosts keeps strict mode's guarantee: the agent never reaches a provider except through headers the gateway overwrites, so it cannot use an allowed provider with an attacker's key.
+
+**Scope.**
+Pipelock stays the run's `EGRESS_SIDECAR`, the one container the run metadata records; the gateway gets its own container, `rapunzel-gateway-<run>`, and both are removed, and swept, like any egress resource.
+`RAPUNZEL_EGRESS_ALLOW_PRIVATE`, `RAPUNZEL_EGRESS_LOGINS`, and `rapunzel-ctl` grants stay `allowlist`-only.
+Every tool host is still a path out for whatever the agent reads (residual risk 2); only the provider key itself stays out.
+
 ## Residual risks
 
 Ranked by the security review:
@@ -333,7 +349,7 @@ Ranked by the security review:
 
 ## Verification
 
-`./verify-egress.sh` runs both restricted modes through the real launcher and fails on any missed check.
+`./verify-egress.sh` runs both restricted modes, and strict with a tool allowlist, through the real launcher and fails on any missed check.
 A listener on the host network acts as a canary.
 
 - **Both modes:** no external DNS, no direct IPv4 or IPv6, no cloud metadata, and the host canary is unreachable through `host.docker.internal` and through the network's gateway address.
@@ -350,6 +366,7 @@ A listener on the host network acts as a canary.
   - the gateway replaces the agent's credentials, and no real key reaches pi's environment or `models.json`;
   - the variables named by `RAPUNZEL_BASE_URL_VARIABLE` and `RAPUNZEL_API_KEY_VARIABLE` hold the gateway route and the placeholder.
   - with the opencode harness, when `rapunzel:opencode` is built: the bootstrap routes the custom and `anthropic` providers through the gateway with the placeholder, lists the custom models through it, and no real key reaches the sandbox.
+- **strict-tools** (needs internet), strict with `RAPUNZEL_EGRESS_ALLOW=registry.npmjs.org` and an echo server behind the gateway: every strict and every allowlist check above passes in the same container, `api.openai.com` is refused by the tool proxy, no real key reaches the agent, and a `*.anthropic.com` entry stops the launch.
 - **Afterwards:** no sidecar container or network is left behind. A launcher killed before its cleanup leaves them for the next run's sweep ([D13](#d13-stale-per-run-resources-are-swept-by-the-next-run)).
 
 `./test-control.sh` checks redaction, configuration precedence, shared hostname validation, prefix collisions, grouped policy coverage, terminal-safe output, log errors, and shutdown wording without Docker. `./verify-control.sh` exercises live grant/revoke, prefix selection, policy-aware history, fresh hash acknowledgements after more than 2,000 denials, cross-run isolation, concurrent mutation handling, invalid candidates, lost acknowledgements, CLI-PID-only interruption before/after replacement, retained private-address blocking, and cleanup. Run it separately from `verify-egress.sh`, whose final resource-count check assumes no other egress tests start concurrently.

@@ -11,6 +11,8 @@
 #   allowlist_start        - start Pipelock, the CONNECT allowlist proxy
 #   gateway_configure      - render the Caddy credential gateway config
 #   gateway_start          - start the Caddy credential gateway
+#   gateway_own_sidecar    - give the gateway its own container, for strict
+#                            mode with a tool allowlist next to it
 #   egress_stop            - remove the sidecar and both networks again
 #
 # pi joins only EGRESS_NETWORK. That network is --internal with an isolated
@@ -52,6 +54,10 @@ GATEWAY_BUILTINS=(
 EGRESS_NETWORK=""
 EGRESS_OUTBOUND=""
 EGRESS_SIDECAR=""
+# The gateway's container: EGRESS_SIDECAR itself in plain strict mode, its own
+# when Pipelock runs next to it (strict with RAPUNZEL_EGRESS_ALLOW). Pipelock
+# stays EGRESS_SIDECAR, the container run metadata and rapunzel-ctl read.
+GATEWAY_SIDECAR=""
 EGRESS_HOSTS=()
 EGRESS_PRIVATE_HOSTS=()
 EGRESS_LIB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -123,6 +129,11 @@ egress_networks_create() {
         return 1
     fi
     EGRESS_SIDECAR="rapunzel-egress-${run_id}"
+    GATEWAY_SIDECAR=$EGRESS_SIDECAR
+}
+
+gateway_own_sidecar() {
+    GATEWAY_SIDECAR="rapunzel-gateway-${EGRESS_SIDECAR#rapunzel-egress-}"
 }
 
 # Add one allowlist entry after checking it is a plain DNS name.
@@ -270,7 +281,7 @@ allowlist_start() {
     docker cp --quiet "${dir}/pipelock.yaml" "${EGRESS_SIDECAR}:/config/pipelock.yaml"
     docker network connect "$EGRESS_OUTBOUND" "$EGRESS_SIDECAR"
     docker start "$EGRESS_SIDECAR" >/dev/null
-    _egress_wait /pipelock healthcheck --addr "127.0.0.1:${EGRESS_PROXY_PORT}"
+    _egress_wait "$EGRESS_SIDECAR" /pipelock healthcheck --addr "127.0.0.1:${EGRESS_PROXY_PORT}"
 }
 
 # Render the Caddyfile and the gateway env-file into DIR.
@@ -407,7 +418,7 @@ gateway_start() {
     # The config travels as an env value rather than a bind mount, so it works
     # without Docker Desktop file sharing and with remote Docker contexts.
     docker create \
-        --name "$EGRESS_SIDECAR" \
+        --name "$GATEWAY_SIDECAR" \
         --label rapunzel.egress=1 \
         --label "rapunzel.owner=${EGRESS_OWNER}" \
         --network "$EGRESS_NETWORK" \
@@ -429,30 +440,32 @@ gateway_start() {
         "$GATEWAY_IMAGE" \
         sh -c 'printf "%s\n" "$GW_CADDYFILE" >/tmp/Caddyfile && exec caddy run --config /tmp/Caddyfile --adapter caddyfile' \
         >/dev/null
-    docker network connect "$EGRESS_OUTBOUND" "$EGRESS_SIDECAR"
-    docker start "$EGRESS_SIDECAR" >/dev/null
-    _egress_wait wget -q -O /dev/null "http://127.0.0.1:${GATEWAY_PORT}/healthz"
+    docker network connect "$EGRESS_OUTBOUND" "$GATEWAY_SIDECAR"
+    docker start "$GATEWAY_SIDECAR" >/dev/null
+    _egress_wait "$GATEWAY_SIDECAR" wget -q -O /dev/null "http://127.0.0.1:${GATEWAY_PORT}/healthz"
 }
 
-# Run a readiness command inside the sidecar until it succeeds.
+# Run a readiness command inside a sidecar until it succeeds.
 _egress_wait() {
-    local attempt
+    local sidecar=$1 attempt
+    shift
     for attempt in $(seq 1 50); do
-        if docker exec "$EGRESS_SIDECAR" "$@" >/dev/null 2>&1; then
+        if docker exec "$sidecar" "$@" >/dev/null 2>&1; then
             return 0
         fi
         sleep 0.1
     done
     printf 'rapunzel: the egress sidecar did not become ready after %s attempts:\n' "$attempt" >&2
-    docker logs --tail 20 "$EGRESS_SIDECAR" >&2 || true
+    docker logs --tail 20 "$sidecar" >&2 || true
     return 1
 }
 
 egress_stop() {
-    if [[ -n "$EGRESS_SIDECAR" ]]; then
+    local sidecar
+    for sidecar in "$EGRESS_SIDECAR" "$GATEWAY_SIDECAR"; do
         # --volumes also removes the anonymous config volume.
-        docker rm --force --volumes "$EGRESS_SIDECAR" >/dev/null 2>&1 || true
-    fi
+        [[ -z "$sidecar" ]] || docker rm --force --volumes "$sidecar" >/dev/null 2>&1 || true
+    done
     local network
     for network in "$EGRESS_NETWORK" "$EGRESS_OUTBOUND"; do
         [[ -z "$network" ]] || docker network rm "$network" >/dev/null 2>&1 || true

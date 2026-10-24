@@ -17,7 +17,7 @@ Every one of these properties is checked by scripts that act as a hostile agent 
 1. **The boundary is outside the agent.** rapunzel does not rely on the agent's own permission prompts or sandbox. Docker, the launcher, and sidecar containers enforce every control, whichever harness runs inside.
 2. **One host directory, nothing else.** The project is mounted at `/workspace`. The host home directory, the harnesses' host directories such as `~/.pi` or `~/.claude`, `~/.ssh`, and the Docker socket are never mounted. Agent state lives in a named volume per project and harness.
 3. **No privileges.** The agent runs as the caller's numeric UID and GID, with all capabilities dropped and `no-new-privileges` set.
-4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts, which the operator can extend per run from the host. `strict` (pi, opencode, and Claude Code) gives only fixed provider routes and no real API key.
+4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts, which the operator can extend per run from the host. `strict` (pi, opencode, and Claude Code) gives only fixed provider routes and no real API key, optionally plus named non-provider HTTPS hosts for tools.
 5. **The network boundary fails closed.** In both restricted modes the agent sits on a Docker `--internal` network with no route, no external DNS, and no host address. Anything that ignores the proxy has nowhere to go.
 6. **The host is protected from planted files.** Git hooks and git configuration are read-only inside the container, so the agent cannot make the host's git run its code. Other host-executed files are reported, not blocked. With `--clone` the agent works on a clone in a volume instead, and nothing it writes reaches the host checkout.
 7. **Claims are tested, not assumed.** `verify-isolation.sh`, `verify-host-files.sh`, `verify-workspace.sh`, `verify-egress.sh`, and `verify-control.sh` probe the boundary through the real launcher. CI runs them on every change and before every image release.
@@ -171,7 +171,7 @@ How far they reach depends on the egress mode (section 4.5): in `open` and `allo
 |---|---|---|
 | `open` (default) | yes | the internet through Docker's `bridge` network |
 | `allowlist` | yes | only allowlisted hosts over HTTPS |
-| `strict` (pi, opencode, Claude Code) | no, only a placeholder | only fixed provider routes on a credential gateway |
+| `strict` (pi, opencode, Claude Code) | no, only a placeholder | only fixed provider routes on a credential gateway, plus, with `RAPUNZEL_EGRESS_ALLOW`, the listed non-provider hosts over HTTPS |
 
 Both restricted modes also set the harness's offline switches, for example `PI_OFFLINE` or `DISABLE_AUTOUPDATER`, because vendor update and telemetry hosts are unreachable.
 
@@ -212,6 +212,10 @@ Caddy forwards only one route per built-in provider with a key (`/anthropic`, `/
 Overwriting rather than swapping a placeholder matters: it stops the agent from using an allowed provider with an attacker's key to send data out.
 OAuth logins made inside the sandbox cannot use this mode, because the harness refreshes those tokens itself and keeps them in the volume.
 Codex and dsh do not support `strict` yet, and the launcher refuses it for them.
+
+**strict mode with a tool allowlist.**
+`RAPUNZEL_EGRESS_ALLOW` in strict mode starts Pipelock next to the gateway, configured as in allowlist mode, so tools can install packages or clone repositories while the provider key stays out.
+An entry that covers a provider's API host is refused at startup, so the agent still cannot reach a provider except through the gateway ([D17](egress.md#d17-strict-mode-with-a-tool-allowlist)).
 
 **Extension providers.**
 A provider can come from a pi extension that reads its own variables, for example `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`.
