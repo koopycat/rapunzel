@@ -49,7 +49,7 @@ ENTRYPOINT ["/usr/local/bin/rapunzel-entrypoint"]
 FROM base AS claude
 
 ARG CLAUDE_PACKAGE=@anthropic-ai/claude-code
-ARG CLAUDE_VERSION=2.1.309
+ARG CLAUDE_VERSION=2.1.310
 
 # The package ships a placeholder binary and a postinstall that links in the
 # platform's native one from an optional dependency. --ignore-scripts keeps
