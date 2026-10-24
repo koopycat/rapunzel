@@ -206,6 +206,12 @@ allowlist_configure() {
             '  sni_require_tls: true' \
             '  # Long model turns can stream quietly for minutes.' \
             '  idle_timeout_seconds: 900' \
+            '# No effective tunnel rate limit: the default of 60 per host and minute' \
+            '# answers 429 to ordinary bursts, counts tunnels rather than data, and' \
+            '# Pipelock turns 0 back into 60, so a limit that is never reached is used.' \
+            'fetch_proxy:' \
+            '  monitoring:' \
+            '    max_requests_per_minute: 1000000' \
             '# Keep /metrics and /stats off the port pi can reach.' \
             'metrics_listen: "127.0.0.1:9091"' \
             'logging:' \

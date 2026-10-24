@@ -344,6 +344,10 @@ The project is the only host directory mounted; the read-only entries are parts 
 The named volume is Docker-managed and contains pi's container-local settings, auth, trust state, resources, and sessions.
 The runner uses Docker's `volume-nocopy` mount option so image files under `/home/agent/.pi/agent` cannot seed or overwrite the volume.
 The runtime uses a caller-mapped non-root UID, drops all Linux capabilities, and enables `no-new-privileges`.
+The container can start at most 4096 processes, so a fork bomb or runaway build cannot exhaust the Docker VM for every other container on it.
+Set `RAPUNZEL_PIDS_LIMIT` (at least 64) when a build legitimately needs more; it fails with `fork: Resource temporarily unavailable` otherwise.
+Memory is not limited by default, because builds vary too much for a sensible default; set `RAPUNZEL_MEMORY`, such as `RAPUNZEL_MEMORY=8g` (at least `64m`), to cap it.
+`rapunzel-ctl config` shows the effective limits.
 
 The following are deliberately not mounted or copied:
 
@@ -376,9 +380,10 @@ A planted file like that runs outside the container the next time you use git, e
     modified: package.json
   ```
 
-  The list covers `.envrc`; `.vscode` tasks, settings, and launch files; `.devcontainer`; CI workflows; pre-commit and husky hooks; agent settings (`.claude`, `.mcp.json`, `.cursor`, and opencode's `opencode.json` and `.opencode`, whose plugins run on the host); `package.json` and package-manager config; `Makefile` and `justfile`; Nix and devenv files; `mise.toml`; `.gitattributes` and `.gitmodules`; and git internals that are not read-only (`.git/info`, `.git/commondir`, `.git/worktrees`, alternates, and submodule config and hooks).
+  The list covers `.envrc`; `.vscode` tasks, settings, and launch files; `.devcontainer`; CI workflows; pre-commit and husky hooks; agent settings and resources (Claude Code's `.claude` settings, commands, agents, skills, and hooks, `.mcp.json`, `.cursor`, pi's project-local `.pi` and `.agents` skills, and opencode's `opencode.json` and `.opencode`, whose plugins run on the host); `package.json` and package-manager config; `Makefile` and `justfile`; Cargo's `.cargo/config.toml` and a top-level `build.rs`; JetBrains run configurations in `.idea/runConfigurations` and `.run`; Nix and devenv files; `mise.toml`; `.gitattributes` and `.gitmodules`; and git internals that are not read-only (`.git/info`, `.git/commondir`, `.git/worktrees`, alternates, and submodule config and hooks).
 
 This is detection, not prevention, for everything except git config and hooks.
+The list is a fixed set of paths: a `build.rs` in a nested crate and run configurations kept only in `.idea/workspace.xml`, which the IDE rewrites constantly, are not watched.
 Review reported files before running anything on the host.
 Linked worktrees and submodules whose `.git` is a file keep their git directory outside the project, so it is not mounted at all.
 
@@ -576,6 +581,7 @@ The sidecar is [Pipelock](https://github.com/luckyPipewrench/pipelock), an HTTPS
 pi gets `HTTPS_PROXY=http://egress:8888` and `NODE_USE_ENV_PROXY=1`.
 The proxy allows a tunnel only to an allowlisted host, and only when the TLS handshake inside names that same host.
 It refuses IP literals, private and metadata addresses, and plain `http://` requests.
+It does not rate-limit tunnels: Pipelock's default of 60 per host and minute is lifted, because it broke ordinary bursts and limits nothing that matters for a local sandbox.
 
 The allowlist is built from the configuration:
 

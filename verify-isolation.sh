@@ -58,3 +58,15 @@ docker run --rm \
     --env HOST_HOME_PATH="$HOST_HOME" \
     "$IMAGE" \
     /usr/local/lib/rapunzel/verify-isolation-inner.sh
+
+# The resource limits are set by the launcher, so check them through it.
+launcher_limits() {
+    env -u RAPUNZEL_PIDS_LIMIT -u RAPUNZEL_MEMORY -u RAPUNZEL_EGRESS -u RAPUNZEL_NETWORK \
+        RAPUNZEL_ENV_FILE= RAPUNZEL_IMAGE="$IMAGE" RAPUNZEL_VOLUME="$VOLUME" "$@" \
+        "${ROOT_DIR}/rapunzel" --harness "$H_NAME" --exec "$PROJECT_DIR" \
+        /usr/local/lib/rapunzel/verify-isolation-inner.sh --limits "${expected[@]}"
+}
+expected=(4096 max)
+launcher_limits
+expected=(512 268435456)
+launcher_limits RAPUNZEL_PIDS_LIMIT=512 RAPUNZEL_MEMORY=256m

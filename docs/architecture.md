@@ -108,7 +108,7 @@ flowchart LR
 
 ### 4.1 Process and filesystem isolation
 
-The agent container starts with `--user <caller UID>:<caller GID>`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, and `--init`.
+The agent container starts with `--user <caller UID>:<caller GID>`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--init`, and a process limit of 4096 (`RAPUNZEL_PIDS_LIMIT`), so a fork bomb cannot exhaust the Docker VM; a memory limit applies only when `RAPUNZEL_MEMORY` is set.
 It has exactly two intentional mounts, plus the read-only git sub-mounts of section 4.6:
 
 ```text
@@ -231,7 +231,7 @@ The agent can still commit, branch, and stash; it cannot add a hook, set `core.f
 Linked worktrees and submodules keep their git directory outside the project, so it is not mounted at all.
 
 **Detection for everything else.**
-Before the agent starts, `rapunzel` hashes files that common host tools run on their own: `.envrc`, editor tasks and settings, devcontainer and CI configuration, pre-commit and husky hooks, agent settings, package manifests and scripts, Makefiles, Nix and devenv files, and the writable parts of `.git`.
+Before the agent starts, `rapunzel` hashes files that common host tools run on their own: `.envrc`, editor tasks and settings, JetBrains run configurations, devcontainer and CI configuration, pre-commit and husky hooks, agent settings and project-local agent resources (`.pi`, `.agents`, Claude Code commands, agents, skills, and hooks), package manifests and scripts, Cargo configuration and a top-level `build.rs`, Makefiles, Nix and devenv files, and the writable parts of `.git`.
 When the agent exits, it lists every such file that was added, modified, or removed.
 
 The trade-off is deliberate: making the whole `.git` read-only would stop the agent from committing, and a clone-based workspace is a larger change (section 8).
@@ -316,6 +316,8 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 | `RAPUNZEL_NETWORK` | Docker network for `open` mode (default `bridge`; `none` for offline). |
 | `RAPUNZEL_PORT` | Host port for a harness web UI on `127.0.0.1` (dsh, default 3080). |
 | `RAPUNZEL_RUNS_DIR` | Host-only run metadata for `rapunzel-ctl` (default `~/.local/state/rapunzel/runs`). |
+| `RAPUNZEL_PIDS_LIMIT` | Process limit for the agent container (default 4096, at least 64). |
+| `RAPUNZEL_MEMORY` | Memory limit for the agent container, such as `8g` (default none, at least `64m`). |
 | `RAPUNZEL_EGRESS` | `open`, `allowlist`, or `strict`. |
 | `RAPUNZEL_EGRESS_ALLOW` | Extra hosts for `allowlist`. |
 | `RAPUNZEL_EGRESS_LOGINS` | `/login` providers for `allowlist`: `openai`, `openai-codex`, `anthropic`, `github-copilot`. |

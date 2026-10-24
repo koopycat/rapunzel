@@ -63,6 +63,10 @@ mkdir -p .vscode
 printf "{}\n" > .vscode/tasks.json
 printf "echo hi\n" > .envrc
 printf "* filter=evil\n" > .git/info/attributes
+mkdir -p .pi/extensions .claude/commands
+printf "export default () => {}\n" > .pi/extensions/evil.ts
+printf "fn main() {}\n" > build.rs
+printf "run this\n" > .claude/commands/x.md
 '
 output=$(
     # An empty RAPUNZEL_ENV_FILE also keeps the launcher's default env file out.
@@ -100,7 +104,8 @@ expect git-commit 0
     fail "a hook reached the host"
 [[ "$(git -C "$project" log -1 --format=%s)" == from-container ]] || fail "the commit made in the container is missing"
 
-for expected in "added: .envrc" "added: .vscode/tasks.json" "added: .git/info/attributes"; do
+for expected in "added: .envrc" "added: .vscode/tasks.json" "added: .git/info/attributes" \
+    "added: .pi/extensions/evil.ts" "added: build.rs" "added: .claude/commands/x.md"; do
     if grep -qF "$expected" "$report"; then
         printf 'PASS reported %s\n' "$expected"
     else

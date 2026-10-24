@@ -111,7 +111,7 @@ check_allowlist() {
     key="sk-dummy-$(random_token)"
     probe_args=(allowlist "$canary_port" api.openai.com)
     output=$(probe RAPUNZEL_EGRESS=allowlist OPENAI_API_KEY="$key")
-    expect_checks "$output" 19
+    expect_checks "$output" 20
     env_line=$(section "$output" ENV)
     # In this mode the agent holds the key by design.
     [[ "$env_line" == *"\"OPENAI_API_KEY\":\"${key}\""* ]] || fail "allowlist mode did not forward the provider key"
@@ -122,7 +122,7 @@ check_allowlist() {
     printf '== allowlist with a /login provider (openai-codex)\n'
     probe_args=(allowlist "$canary_port" chatgpt.com)
     output=$(probe RAPUNZEL_EGRESS=allowlist RAPUNZEL_EGRESS_LOGINS=openai-codex)
-    expect_checks "$output" 19
+    expect_checks "$output" 20
 
     check_private_host
 }
@@ -152,12 +152,12 @@ check_private_host() {
     printf '== allowlist with a private host in RAPUNZEL_EGRESS_ALLOW (%s)\n' "$name"
     probe_args=(allowlist "$canary_port" api.openai.com "${name}:${port}" refused)
     output=$(probe RAPUNZEL_EGRESS=allowlist OPENAI_API_KEY=sk-dummy RAPUNZEL_EGRESS_ALLOW="$name")
-    expect_checks "$output" 20
+    expect_checks "$output" 21
 
     printf '== allowlist with RAPUNZEL_EGRESS_ALLOW_PRIVATE (%s)\n' "$name"
     probe_args=(allowlist "$canary_port" api.openai.com "${name}:${port}" reachable)
     output=$(probe RAPUNZEL_EGRESS=allowlist OPENAI_API_KEY=sk-dummy RAPUNZEL_EGRESS_ALLOW_PRIVATE="$name")
-    expect_checks "$output" 20
+    expect_checks "$output" 21
     docker rm --force "$upstream" >/dev/null 2>&1 || true
 }
 

@@ -16,7 +16,7 @@ config() {
     env -u RAPUNZEL_HARNESS -u RAPUNZEL_NETWORK -u RAPUNZEL_API_KEY_VARIABLE -u RAPUNZEL_API_BASE_URL \
         -u RAPUNZEL_BASE_URL -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
         -u RAPUNZEL_EGRESS_ALLOW -u RAPUNZEL_EGRESS_ALLOW_PRIVATE -u RAPUNZEL_EGRESS_LOGINS \
-        -u RAPUNZEL_BASE_URL_VARIABLE PATH="$test_dir/bin:$PATH" RAPUNZEL_ENV_FILE= "$@" \
+        -u RAPUNZEL_BASE_URL_VARIABLE -u RAPUNZEL_PIDS_LIMIT -u RAPUNZEL_MEMORY PATH="$test_dir/bin:$PATH" RAPUNZEL_ENV_FILE= "$@" \
         "$ROOT/rapunzel-ctl" config "$test_dir/project" --harness pi
 }
 
@@ -52,6 +52,16 @@ for url in 'https://user:secret@example.com/private' 'https://example.com/path?t
     [[ "$(<"$test_dir/invalid-url")" != *secret* ]]
 done
 
+# Resource limits: a process limit by default, memory only when set, and
+# invalid values refused before Docker.
+output=$(config)
+jq -e '.limits == {pids: 4096, memory: null}' <<<"$output" >/dev/null
+output=$(config RAPUNZEL_PIDS_LIMIT=8192 RAPUNZEL_MEMORY=8g)
+jq -e '.limits == {pids: 8192, memory: 8589934592}' <<<"$output" >/dev/null
+for setting in RAPUNZEL_PIDS_LIMIT=unlimited RAPUNZEL_PIDS_LIMIT=10 RAPUNZEL_MEMORY=lots RAPUNZEL_MEMORY=1m; do
+    if config "$setting" >/dev/null 2>&1; then exit 1; fi
+done
+
 # The control registry itself must not be agent-writable or follow a final
 # symlink. These tests do not create or inspect any Docker resource.
 # shellcheck source=lib/runs.sh
@@ -79,6 +89,7 @@ EGRESS_HOSTS=(api.openai.com) EGRESS_PRIVATE_HOSTS=()
 allowlist_configure "$test_dir"
 grep -q 'sni_verification: true' "$test_dir/pipelock.yaml"
 grep -q 'sni_require_tls: true' "$test_dir/pipelock.yaml"
+grep -q '    max_requests_per_minute: 1000000' "$test_dir/pipelock.yaml"
 
 # A block log is data: avoid headers, raw reasons/URLs and terminal control
 # characters, and never present SNI violations as ordinary host approvals.
@@ -181,6 +192,7 @@ output=$(jq -n --arg project $'path\033[2J\n'"$unicode" '[{run:"12345678aaaaaaaa
 [[ "$output" != *$'\033'* && "$output" != *"$unicode"* && "$output" == *'\u001b'* && "$output" == *'\u202e\ud83d\udc08'* ]]
 PATH="$test_dir/bin:$PATH" RAPUNZEL_ENV_FILE='' "$ROOT/rapunzel-ctl" --format=text config "$test_dir/project" >"$test_dir/text-config"
 grep -q 'Project:' "$test_dir/text-config"
+grep -q 'Limits: processes 4096, memory none' "$test_dir/text-config"
 PATH="$test_dir/bin:$PATH" RAPUNZEL_ENV_FILE='' "$ROOT/rapunzel-ctl" --json config "$test_dir/project" | jq -e '.harness == "pi"' >/dev/null
 
 # Evidence queries must not inherit the diagnostic --tail limit. Log-read

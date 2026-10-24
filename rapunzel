@@ -54,6 +54,9 @@ Environment:
   RAPUNZEL_EGRESS         open (default), allowlist, or strict (docs/egress.md)
   RAPUNZEL_RUNS_DIR       Host-only metadata (default ~/.local/state/rapunzel/runs)
   RAPUNZEL_PORT           Host port for a harness web UI, on 127.0.0.1 (dsh)
+  RAPUNZEL_PIDS_LIMIT     Process limit for the agent container (default: 4096)
+  RAPUNZEL_MEMORY         Memory limit for the agent container, such as 8g
+                          (default: none)
   RAPUNZEL_EGRESS_ALLOW   Extra hosts for allowlist mode, comma-separated
   RAPUNZEL_EGRESS_LOGINS  /login providers for allowlist mode, comma-separated:
                           openai, openai-codex, anthropic, github-copilot
@@ -152,6 +155,33 @@ case "$EGRESS" in
         exit 2
         ;;
 esac
+# A process limit is always on: unbounded forks exhaust the Docker VM for every
+# container on it. Memory varies too much between builds for a default.
+PIDS_LIMIT=${RAPUNZEL_PIDS_LIMIT:-4096}
+if [[ ! "$PIDS_LIMIT" =~ ^[0-9]+$ ]] || ((10#$PIDS_LIMIT < 64)); then
+    printf 'rapunzel: RAPUNZEL_PIDS_LIMIT must be a whole number of at least 64, got: %s\n' "$PIDS_LIMIT" >&2
+    exit 2
+fi
+PIDS_LIMIT=$((10#$PIDS_LIMIT))
+MEMORY_LIMIT=${RAPUNZEL_MEMORY:-}
+if [[ -n "$MEMORY_LIMIT" ]]; then
+    if [[ ! "$MEMORY_LIMIT" =~ ^([0-9]{1,15})([bkmgBKMG]?)$ ]]; then
+        printf 'rapunzel: RAPUNZEL_MEMORY must be a size such as 512m or 8g, got: %s\n' "$MEMORY_LIMIT" >&2
+        exit 2
+    fi
+    memory_bytes=$((10#${BASH_REMATCH[1]}))
+    case "${BASH_REMATCH[2]}" in
+        k | K) memory_bytes=$((memory_bytes * 1024)) ;;
+        m | M) memory_bytes=$((memory_bytes * 1024 * 1024)) ;;
+        g | G) memory_bytes=$((memory_bytes * 1024 * 1024 * 1024)) ;;
+    esac
+    if ((memory_bytes < 64 * 1024 * 1024)); then
+        printf 'rapunzel: RAPUNZEL_MEMORY must be at least 64m, got: %s\n' "$MEMORY_LIMIT" >&2
+        exit 2
+    fi
+    MEMORY_LIMIT=$memory_bytes
+fi
+
 RUNTIME_UID=$(id -u)
 RUNTIME_GID=$(id -g)
 if [[ "$RUNTIME_UID" == 0 ]]; then
@@ -242,12 +272,14 @@ args=(
     --workdir /workspace
     --security-opt=no-new-privileges
     --cap-drop=ALL
+    --pids-limit "$PIDS_LIMIT"
     --mount "type=bind,src=${PROJECT_DIR},dst=/workspace"
     --mount "type=volume,src=${VOLUME},dst=${H_STATE_DIR},volume-nocopy"
     --env HOME=/home/agent
     --env "RAPUNZEL_STATE_DIR=${H_STATE_DIR}"
 )
 [[ -z "$H_STATE_ENV" ]] || args+=(--env "${H_STATE_ENV}=${H_STATE_DIR}")
+[[ -z "$MEMORY_LIMIT" ]] || args+=(--memory "$MEMORY_LIMIT")
 # Show the host's local time instead of UTC. TZ is not secret, so it is set in
 # every egress mode; the name is checked so it cannot carry anything else.
 host_tz=${TZ:-}

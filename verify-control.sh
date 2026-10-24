@@ -6,6 +6,10 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 IMAGE=${RAPUNZEL_IMAGE:-rapunzel}
 project=$(mktemp -d "${ROOT}/.rapunzel-verify.XXXXXX")
 runs=$(mktemp -d "${TMPDIR:-/tmp}/rapunzel-runs-test.XXXXXX")
+# The fault shim stays outside the project the agents mount: Colima's inotify
+# forwarding replays host events as chmod with a stale mode, which can turn a
+# freshly made executable in a mounted directory back into 0644.
+shim=$(mktemp -d "${TMPDIR:-/tmp}/rapunzel-ctl-shim.XXXXXX")
 volume="rapunzel-control-check-$$"
 ids=() pids=()
 cleanup() {
@@ -13,7 +17,7 @@ cleanup() {
     for id in ${ids[@]+"${ids[@]}"}; do docker stop --time 1 "rapunzel-agent-${id}" >/dev/null 2>&1; done
     for pid in ${pids[@]+"${pids[@]}"}; do wait "$pid"; done
     docker volume rm "$volume" >/dev/null 2>&1
-    rm -rf -- "$project" "$runs"
+    rm -rf -- "$project" "$runs" "$shim"
 }
 trap cleanup EXIT
 ctl() { RAPUNZEL_RUNS_DIR="$runs" "$ROOT/rapunzel-ctl" --json "$@"; }
@@ -128,9 +132,8 @@ ctl egress revoke "$first" example.com
 
 # Inject a broken candidate at the Docker delivery boundary: validation must
 # fail before the running policy is replaced. The shim is test-only.
-mkdir "$project/bin"
 real_docker=$(command -v docker)
-cat >"$project/bin/docker" <<'EOF'
+cat >"$shim/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${CONTROL_FAULT:-}" == invalid && "$1" == cp && "${*: -1}" == *:/config/candidate.yaml ]]; then
@@ -154,8 +157,8 @@ if [[ "${CONTROL_FAULT:-}" == interrupt-before && "$1" == cp && "${*: -1}" == *:
 fi
 exec "$CONTROL_REAL_DOCKER" "$@"
 EOF
-chmod +x "$project/bin/docker"
-if PATH="$project/bin:$PATH" CONTROL_REAL_DOCKER="$real_docker" CONTROL_FAULT=invalid \
+chmod +x "$shim/docker"
+if PATH="$shim:$PATH" CONTROL_REAL_DOCKER="$real_docker" CONTROL_FAULT=invalid \
     CONTROL_BAD_CONFIG="$project/invalid.yaml" ctl egress allow "$first" example.com >"$project/invalid.log" 2>&1; then
     printf 'FAIL: invalid candidate was accepted\n' >&2; exit 1
 fi
@@ -164,14 +167,14 @@ ctl egress show "$first" | jq -e '.grants == []' >/dev/null
 [[ "$(docker inspect --format '{{.State.Running}}' "rapunzel-egress-${first}")" == true ]]
 
 # A failed history read is an error, not an empty pending snapshot.
-if PATH="$project/bin:$PATH" CONTROL_REAL_DOCKER="$real_docker" CONTROL_FAULT=logerror \
+if PATH="$shim:$PATH" CONTROL_REAL_DOCKER="$real_docker" CONTROL_FAULT=logerror \
     ctl egress pending "$first" >"$project/logerror.log" 2>&1; then exit 1; fi
 grep -q 'could not read block history' "$project/logerror.log"
 
 interrupt_update() {
     local phase=$1 controller attempt
     rm -f "$project/signal-marker"
-    env PATH="$project/bin:$PATH" CONTROL_REAL_DOCKER="$real_docker" CONTROL_FAULT="interrupt-$phase" \
+    env PATH="$shim:$PATH" CONTROL_REAL_DOCKER="$real_docker" CONTROL_FAULT="interrupt-$phase" \
         CONTROL_SIGNAL_MARKER="$project/signal-marker" RAPUNZEL_RUNS_DIR="$runs" \
         "$ROOT/rapunzel-ctl" --json egress allow "$first" example.com >"$project/interrupt-$phase.log" 2>&1 &
     controller=$!
@@ -195,7 +198,7 @@ ctl egress show "$first" | jq -e '.grants == []' >/dev/null
 # Lost acknowledgements must not report success or leave uncertain egress
 # running. This intentionally stops the second run's sidecar after rollback
 # also cannot be confirmed.
-if PATH="$project/bin:$PATH" CONTROL_REAL_DOCKER="$real_docker" CONTROL_FAULT=noack \
+if PATH="$shim:$PATH" CONTROL_REAL_DOCKER="$real_docker" CONTROL_FAULT=noack \
     ctl egress allow "$second" example.com >"$project/noack.log" 2>&1; then
     printf 'FAIL: missing acknowledgement was treated as success\n' >&2; exit 1
 fi

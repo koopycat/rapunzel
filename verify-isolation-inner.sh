@@ -6,6 +6,19 @@ fail() {
     exit 1
 }
 
+# --limits PIDS MEMORY: compare the cgroup v2 limits the launcher set with the
+# expected values ("max" when unlimited), then stop.
+if [[ "${1:-}" == --limits ]]; then
+    [[ $# -eq 3 ]] || fail "usage: --limits PIDS MEMORY"
+    [[ -r /sys/fs/cgroup/pids.max && -r /sys/fs/cgroup/memory.max ]] || fail "cgroup v2 limit files are missing"
+    pids=$(</sys/fs/cgroup/pids.max)
+    memory=$(</sys/fs/cgroup/memory.max)
+    [[ "$pids" == "$2" ]] || fail "process limit is $pids, expected $2"
+    [[ "$memory" == "$3" ]] || fail "memory limit is $memory, expected $3"
+    printf 'PASS: process limit %s, memory limit %s\n' "$pids" "$memory"
+    exit 0
+fi
+
 [[ "$(id -u)" != 0 ]] || fail "container process is root"
 [[ -d /workspace ]] || fail "/workspace is missing"
 state_dir=${RAPUNZEL_STATE_DIR:?RAPUNZEL_STATE_DIR is not set}

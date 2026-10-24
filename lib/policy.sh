@@ -63,7 +63,8 @@ config_report() {
     jq --ascii-output -n --arg project "$PROJECT_DIR" --arg harness "$H_NAME" --arg image "$IMAGE" --arg volume "$VOLUME" \
         --arg mode "$EGRESS" --arg modeSource "${RAPUNZEL_EGRESS+environment}" --arg envfile "${RAPUNZEL_ENV_FILE:-}" \
         --arg network "$NETWORK" --argjson policy "$policy" --argjson credentials "$credentials" \
-        '{project:$project,harness:$harness,image:$image,volume:$volume,egress:$mode,
+        --argjson pids "$PIDS_LIMIT" --argjson memory "${MEMORY_LIMIT:-null}" \
+        '{project:$project,harness:$harness,image:$image,volume:$volume,limits:{pids:$pids,memory:$memory},egress:$mode,
           egressSource:(if $modeSource == "" then "default" else $modeSource end),envFile:$envfile,
           network:(if $mode == "open" then $network else "per-run isolated internal network" end),
           policy:$policy,credentials:$credentials,providerKeysEnterAgent:($mode != "strict"),

@@ -21,9 +21,13 @@ HOST_EXECUTED_PATHS=(
     .github/workflows .gitlab-ci.yml
     .pre-commit-config.yaml .husky .githooks
     .claude/settings.json .claude/settings.local.json .mcp.json .cursor
+    .claude/commands .claude/agents .claude/skills .claude/hooks
+    .pi .agents
     opencode.json opencode.jsonc .opencode
     package.json .npmrc .pnpmfile.cjs .yarnrc.yml
     Makefile justfile Justfile
+    .cargo/config.toml .cargo/config build.rs
+    .idea/runConfigurations .run
     devenv.nix devenv.yaml flake.nix shell.nix
     mise.toml .mise.toml
     .gitattributes .gitmodules
