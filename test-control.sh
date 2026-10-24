@@ -248,4 +248,21 @@ docker() { if [[ "$1" == inspect ]]; then printf 'false\n'; fi; }
 output=$(control_stop_uncertain 2>&1)
 [[ "$output" == *'confirmed stopped'* ]]
 
-printf 'PASS: redacted config, validation, safe output, selectors, grouped history, log failures, and shutdown wording (no Docker)\n'
+# Host-file mounts: .git is pinned onto its own path before the read-only
+# parts, and symlinked git control paths stop the launch.
+# shellcheck source=lib/host-files.sh
+source "$ROOT/lib/host-files.sh"
+hf_project="$test_dir/hf-project"
+mkdir -p "$hf_project/.git/hooks"
+: >"$hf_project/.git/config"
+host_files_mounts "$hf_project"
+[[ "${HOST_FILE_MOUNTS[1]}" == "type=bind,src=${hf_project}/.git,dst=/workspace/.git" ]]
+[[ "${HOST_FILE_MOUNTS[3]}" == *"/.git/config,dst=/workspace/.git/config,readonly" ]]
+rm -rf "$hf_project/.git/hooks"
+ln -s "$test_dir" "$hf_project/.git/hooks"
+if host_files_mounts "$hf_project" 2>/dev/null; then
+    printf 'FAIL: a symlinked .git/hooks was accepted\n' >&2
+    exit 1
+fi
+
+printf 'PASS: redacted config, validation, safe output, selectors, grouped history, log failures, shutdown wording, and host-file mounts (no Docker)\n'

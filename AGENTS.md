@@ -24,7 +24,7 @@ pi is the default harness; Claude Code, Codex CLI, DeepSeek Harness (dsh), and o
 `docs/architecture.md` describes the design these invariants protect; keep it current when they change.
 
 
-- The only host bind mount is the requested project at `/workspace`, plus read-only sub-mounts of its `.git/config`, `.git/hooks`, and an in-project `core.hooksPath` (`lib/host-files.sh`). pi must stay able to commit; keep `./verify-host-files.sh` passing.
+- The only host bind mount is the requested project at `/workspace`, plus `.git` pinned onto its own path (a mount point cannot be renamed, so `.git` cannot be swapped) and read-only sub-mounts of its `.git/config`, `.git/hooks`, and an in-project `core.hooksPath` (`lib/host-files.sh`). A symlinked `.git/config` or `.git/hooks` stops the launch. pi must stay able to commit; keep `./verify-host-files.sh` passing.
 - Clone workspace (`--clone`, `lib/workspace.sh`): no host bind mount at all. History moves only as git bundles through a networkless helper; the host never runs git in, or reads config from, the workspace repository, and fetches only into `refs/remotes/rapunzel-<harness>/*` with object checks. Keep `./verify-workspace.sh` passing.
 - The image sets `safe.directory=/workspace` system-wide because Docker Desktop shows the mount root as owned by root.
 - Harness configuration and sessions live in a per-project, per-harness named Docker volume at the profile's `H_STATE_DIR` (pi: `/home/agent/.pi/agent`). A harness without a single home variable (opencode) leaves `H_STATE_ENV` empty, and its image points the harness's XDG directories into `H_STATE_DIR`.

@@ -344,7 +344,9 @@ else
     args+=(--mount "type=bind,src=${PROJECT_DIR},dst=/workspace")
     # Git config and hooks stay read-only, so the harness can commit but cannot
     # plant anything the host's git would run.
-    [[ "$CONFIG_MODE" == true ]] || host_files_mounts "$PROJECT_DIR"
+    if [[ "$CONFIG_MODE" != true ]]; then
+        host_files_mounts "$PROJECT_DIR" || exit 1
+    fi
     args+=(${HOST_FILE_MOUNTS[@]+"${HOST_FILE_MOUNTS[@]}"})
 fi
 
