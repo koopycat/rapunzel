@@ -39,6 +39,6 @@ pi is the default harness; Claude Code, Codex CLI, DeepSeek Harness (dsh), and o
 - The launcher publishes no ports, except a profile's web UI (`H_WEB_PORT`, dsh) when the harness runs with its default arguments in `open` egress mode: one port, bound to the host's `127.0.0.1` only, with the harness's own authentication left on.
 - Do not mount the host home directory, `~/.pi`, or `~/.ssh`.
 - `/home/agent` and `/home/agent/.pi` are mode 1777 because the runtime UID is the caller's, not the image's 1001; extensions write caches such as `~/.pi/cache` there.
-- Since pi 1.0.1 the package ships no `npm-shrinkwrap.json`, so transitive dependencies resolve at build time. `lib/prune-foreign-platforms.mjs` stays as a guard against foreign `@esbuild/*` platform binaries and must run in the same `RUN` layer as `npm install`.
+- pi and all transitive dependencies install with `npm ci --ignore-scripts` from `profiles/pi/package.json` and its `package-lock.json` (pi itself ships no shrinkwrap since 1.0.1). Change the pin only together with the lockfile. `lib/prune-foreign-platforms.mjs` stays as a guard against foreign `@esbuild/*` platform binaries and must run in the same `RUN` layer as `npm ci`.
 - `publish-image.yml` calls `ci.yml` and publishes only after it passes; do not add a separate push trigger to `ci.yml`.
 - Both workflows skip docs-only changes with `paths-ignore`, which is safe only while `main` has no required status checks; drop the `pull_request` filter in `ci.yml` before making `test` required. Keep the job timeouts and concurrency groups.
