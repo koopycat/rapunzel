@@ -342,8 +342,10 @@ if [[ -n "$base_url_variable" ]] && { ! env_name_is_valid "$base_url_variable" |
 fi
 
 # Names the strict gateway reads; they are expected in the env and never reach the harness.
+gateway_key_vars=()
+while read -r name; do gateway_key_vars+=("$name"); done < <(gateway_key_names)
 gateway_consumed=(
-    ANTHROPIC_API_KEY OPENAI_API_KEY RAPUNZEL_API_BASE_URL RAPUNZEL_BASE_URL
+    "${gateway_key_vars[@]}" RAPUNZEL_API_BASE_URL RAPUNZEL_BASE_URL
     RAPUNZEL_API_KEY_VARIABLE "${key_variable:-RAPUNZEL_API_KEY}"
     ${offline_env_names[@]+"${offline_env_names[@]}"}
 )
@@ -458,8 +460,9 @@ if [[ "$EGRESS" != open ]]; then
             --env NODE_USE_ENV_PROXY=1
         )
     else
-        GW_ANTHROPIC_KEY=$(runtime_value ANTHROPIC_API_KEY)
-        GW_OPENAI_KEY=$(runtime_value OPENAI_API_KEY)
+        for name in "${gateway_key_vars[@]}"; do
+            printf -v "GW_${name}" '%s' "$(runtime_value "$name")"
+        done
         GW_CUSTOM_URL=$custom_url
         GW_CUSTOM_KEY=$(runtime_value "${key_variable:-RAPUNZEL_API_KEY}")
         GW_CUSTOM_API=$(runtime_value RAPUNZEL_API)

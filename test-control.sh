@@ -201,6 +201,24 @@ docker() { if [[ "$1" == inspect ]]; then printf 'false\n'; fi; }
 output=$(control_stop_uncertain 2>&1)
 [[ "$output" == *'confirmed stopped'* ]]
 
+# Strict gateway: built-in providers render from GATEWAY_BUILTINS, keys stay
+# in the env-file, every route drops ?key=, and openrouter splits /v1/*.
+gw_dir="$test_dir/gateway"
+mkdir "$gw_dir"
+GATEWAY_PROVIDERS=""
+GW_GEMINI_API_KEY=gemini-secret GW_OPENROUTER_API_KEY=or-secret gateway_configure "$gw_dir"
+[[ "$GATEWAY_PROVIDERS" == openrouter,google ]]
+if grep -q secret "$gw_dir/Caddyfile"; then
+    printf 'FAIL: a key reached the rendered Caddyfile\n' >&2
+    exit 1
+fi
+grep -qx 'GW_GEMINI_API_KEY=gemini-secret' "$gw_dir/gateway.env"
+grep -q 'header_up X-Goog-Api-Key {env.GW_GEMINI_API_KEY}' "$gw_dir/Caddyfile"
+[[ $(grep -c 'uri query -key' "$gw_dir/Caddyfile") == 2 ]]
+grep -q 'rewrite @v1 /api{uri}' "$gw_dir/Caddyfile"
+grep -q 'rewrite \* /api/v1{uri}' "$gw_dir/Caddyfile"
+[[ $(gateway_key_names | wc -l) -eq ${#GATEWAY_BUILTINS[@]} ]]
+
 # Host-file mounts: .git is pinned onto its own path before the read-only
 # parts, and symlinked git control paths stop the launch.
 # shellcheck source=lib/host-files.sh
@@ -218,4 +236,4 @@ if host_files_mounts "$hf_project" 2>/dev/null; then
     exit 1
 fi
 
-printf 'PASS: redacted config, validation, safe output, selectors, grouped history, log failures, shutdown wording, and host-file mounts (no Docker)\n'
+printf 'PASS: redacted config, validation, safe output, selectors, grouped history, log failures, shutdown wording, gateway routes, and host-file mounts (no Docker)\n'

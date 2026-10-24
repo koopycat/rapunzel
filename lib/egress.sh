@@ -31,6 +31,24 @@ GATEWAY_URL="http://${GATEWAY_ALIAS}:${GATEWAY_PORT}"
 # Placeholder the agent sees wherever a provider expects a key.
 GATEWAY_DUMMY_KEY=rapunzel-gateway
 
+# Built-in providers with a fixed API host, one per line: provider id (pi's,
+# also the gateway route /<id>), key variable, upstream origin, upstream path
+# prefix ("-" for none), and how the key is sent. A present key opens the
+# origin's host in allowlist mode and adds the route to the strict gateway.
+# The openrouter prefix "v1:/api,/api/v1" sends /v1/* (Anthropic Messages
+# models) to /api and everything else (OpenAI-compatible models) to /api/v1,
+# because pi uses both base URLs and one provider-level override cannot.
+GATEWAY_BUILTINS=(
+    "anthropic ANTHROPIC_API_KEY https://api.anthropic.com - x-api-key"
+    "openai OPENAI_API_KEY https://api.openai.com - bearer"
+    "openrouter OPENROUTER_API_KEY https://openrouter.ai v1:/api,/api/v1 bearer"
+    "google GEMINI_API_KEY https://generativelanguage.googleapis.com - x-goog-api-key"
+    "groq GROQ_API_KEY https://api.groq.com /openai bearer"
+    "mistral MISTRAL_API_KEY https://api.mistral.ai - bearer"
+    "deepseek DEEPSEEK_API_KEY https://api.deepseek.com - bearer"
+    "xai XAI_API_KEY https://api.x.ai - bearer"
+)
+
 EGRESS_NETWORK=""
 EGRESS_OUTBOUND=""
 EGRESS_SIDECAR=""
@@ -249,28 +267,29 @@ allowlist_start() {
 }
 
 # Render the Caddyfile and the gateway env-file into DIR.
-# Reads GW_ANTHROPIC_KEY, GW_OPENAI_KEY, GW_CUSTOM_URL, GW_CUSTOM_KEY and
-# GW_CUSTOM_API. Sets GATEWAY_PROVIDERS and GATEWAY_CUSTOM.
+# Reads GW_<key variable> for each GATEWAY_BUILTINS entry (GW_ANTHROPIC_API_KEY,
+# ...), GW_CUSTOM_URL, GW_CUSTOM_KEY and GW_CUSTOM_API. Sets GATEWAY_PROVIDERS
+# and GATEWAY_CUSTOM.
 gateway_configure() {
     local dir=${1:?gateway_configure requires a directory}
     local caddyfile="${dir}/Caddyfile" envfile="${dir}/gateway.env"
-    local routes="" origin="" prefix=""
+    local routes="" origin="" prefix="" entry id key_name key_var style
 
     : >"$envfile"
     chmod 600 "$envfile"
 
     # Secrets stay in the env-file and are read through {env.*} at request
     # time, so the rendered config itself contains none.
-    if [[ -n "${GW_ANTHROPIC_KEY:-}" ]]; then
-        printf 'GW_ANTHROPIC_KEY=%s\n' "$GW_ANTHROPIC_KEY" >>"$envfile"
-        routes+=$(_gateway_route /anthropic https://api.anthropic.com "" x-api-key GW_ANTHROPIC_KEY)$'\n'
-        GATEWAY_PROVIDERS+="anthropic,"
-    fi
-    if [[ -n "${GW_OPENAI_KEY:-}" ]]; then
-        printf 'GW_OPENAI_KEY=%s\n' "$GW_OPENAI_KEY" >>"$envfile"
-        routes+=$(_gateway_route /openai https://api.openai.com "" bearer GW_OPENAI_KEY)$'\n'
-        GATEWAY_PROVIDERS+="openai,"
-    fi
+    for entry in "${GATEWAY_BUILTINS[@]}"; do
+        read -r id key_name origin prefix style <<<"$entry"
+        key_var="GW_${key_name}"
+        [[ -n "${!key_var:-}" ]] || continue
+        printf '%s=%s\n' "$key_var" "${!key_var}" >>"$envfile"
+        [[ "$prefix" != - ]] || prefix=""
+        routes+=$(_gateway_route "/${id}" "$origin" "$prefix" "$style" "$key_var")$'\n'
+        GATEWAY_PROVIDERS+="${id},"
+    done
+    origin="" prefix=""
     if [[ -n "${GW_CUSTOM_URL:-}" ]]; then
         if [[ ! "$GW_CUSTOM_URL" =~ ^(https?://[^/?#@[:space:]]+)(/[^?#[:space:]]*)?$ ]]; then
             printf 'rapunzel: RAPUNZEL_API_BASE_URL is not an http(s) URL without credentials, query or fragment: %s\n' \
@@ -291,7 +310,7 @@ gateway_configure() {
 
     if [[ -z "$routes" ]]; then
         printf '%s\n' \
-            'rapunzel: RAPUNZEL_EGRESS=strict needs ANTHROPIC_API_KEY, OPENAI_API_KEY, or a custom provider (RAPUNZEL_API_BASE_URL).' \
+            "rapunzel: RAPUNZEL_EGRESS=strict needs a provider key ($(gateway_key_names | paste -sd, - | sed 's/,/, /g')) or a custom provider (RAPUNZEL_API_BASE_URL)." \
             'rapunzel: /login (subscription) credentials cannot stay outside the sandbox; use RAPUNZEL_EGRESS=allowlist with RAPUNZEL_EGRESS_LOGINS instead.' >&2
         return 1
     fi
@@ -314,18 +333,47 @@ ${routes}
 EOF
 }
 
+# Print the key variable of every built-in gateway provider, one per line.
+gateway_key_names() {
+    local entry id key_name
+    for entry in "${GATEWAY_BUILTINS[@]}"; do
+        read -r id key_name _ <<<"$entry"
+        printf '%s\n' "$key_name"
+    done
+}
+
 # Print one handle_path block. Arguments: route prefix, upstream origin,
-# upstream path prefix, auth style (x-api-key|bearer), key variable name.
+# upstream path prefix ("v1:A,B" sends /v1/* to A and the rest to B), auth
+# style (x-api-key|bearer|x-goog-api-key), key variable name.
+#
+# Every credential header the agent could send is removed or overwritten, and
+# Google's ?key= query parameter is dropped, so the agent can never put its own
+# key on an allowed provider. Caddy applies deletions after sets, so a style
+# deletes only the headers it does not set.
 _gateway_route() {
     local route=$1 origin=$2 prefix=$3 style=$4 key=$5
     local auth
-    if [[ "$style" == x-api-key ]]; then
-        auth=$'\t\t\theader_up -Authorization\n\t\t\theader_up X-Api-Key {env.'"$key"'}'
-    else
-        auth=$'\t\t\theader_up -X-Api-Key\n\t\t\theader_up Authorization "Bearer {env.'"$key"'}"'
-    fi
+    case "$style" in
+        x-api-key)
+            auth=$'\t\t\theader_up -Authorization\n\t\t\theader_up -X-Goog-Api-Key\n\t\t\theader_up X-Api-Key {env.'"$key"'}'
+            ;;
+        x-goog-api-key)
+            auth=$'\t\t\theader_up -Authorization\n\t\t\theader_up -X-Api-Key\n\t\t\theader_up X-Goog-Api-Key {env.'"$key"'}'
+            ;;
+        *)
+            auth=$'\t\t\theader_up -X-Api-Key\n\t\t\theader_up -X-Goog-Api-Key\n\t\t\theader_up Authorization "Bearer {env.'"$key"'}"'
+            ;;
+    esac
     printf '\thandle_path %s/* {\n' "$route"
-    [[ -n "$prefix" ]] && printf '\t\trewrite * %s{uri}\n' "$prefix"
+    printf '\t\turi query -key\n'
+    if [[ "$prefix" == v1:*,* ]]; then
+        prefix=${prefix#v1:}
+        printf '\t\t@v1 path /v1/*\n'
+        printf '\t\trewrite @v1 %s{uri}\n' "${prefix%%,*}"
+        printf '\t\trewrite * %s{uri}\n' "${prefix#*,}"
+    elif [[ -n "$prefix" ]]; then
+        printf '\t\trewrite * %s{uri}\n' "$prefix"
+    fi
     printf '\t\treverse_proxy %s {\n' "$origin"
     printf '\t\t\theader_up Host {upstream_hostport}\n'
     printf '%s\n' "$auth"

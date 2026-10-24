@@ -177,7 +177,7 @@ The allowlist is built only from settings on the host:
 
 | Setting | Allowed host |
 |---|---|
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | `api.anthropic.com`, `api.openai.com` |
+| A built-in provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY`) | that provider's API host |
 | `RAPUNZEL_API_BASE_URL` | that URL's host |
 | `RAPUNZEL_EGRESS_LOGINS` | model API and token refresh hosts of named `/login` providers |
 | `RAPUNZEL_EGRESS_ALLOW` | listed hosts; `*.example.com` also matches `example.com` |
@@ -188,7 +188,7 @@ It is never read from `auth.json` or anything else in the volume, because the ag
 **strict mode.**
 The sidecar is a Caddy reverse proxy that holds the real keys.
 The bootstrap points pi's providers at `http://llm-proxy:8080`, and the agent holds the placeholder `rapunzel-gateway`.
-Caddy forwards only `/anthropic`, `/openai`, and `/custom` to fixed upstreams, always overwrites the auth headers with the real key, and answers everything else with 403.
+Caddy forwards only one route per built-in provider with a key (`/anthropic`, `/openai`, `/openrouter`, `/google`, `/groq`, `/mistral`, `/deepseek`, `/xai`) and `/custom` to fixed upstreams, always overwrites the auth headers with the real key, drops a `key` query parameter, and answers everything else with 403.
 Overwriting rather than swapping a placeholder matters: it stops the agent from using an allowed provider with an attacker's key to send data out.
 OAuth logins cannot use this mode, because pi refreshes those tokens itself and keeps them in the volume.
 

@@ -9,12 +9,14 @@ policy_host() {
 }
 
 policy_collect() {
-    local host login before index
+    local host login before index entry id key_name origin
     EGRESS_HOSTS=() EGRESS_PRIVATE_HOSTS=() EGRESS_REASONS=()
     [[ "$EGRESS" == allowlist ]] || return 0
     for host in ${H_EGRESS_HOSTS[@]+"${H_EGRESS_HOSTS[@]}"}; do policy_host "$host" "profile ${H_NAME}"; done
-    [[ -z "$(runtime_value ANTHROPIC_API_KEY)" ]] || policy_host api.anthropic.com 'ANTHROPIC_API_KEY present'
-    [[ -z "$(runtime_value OPENAI_API_KEY)" ]] || policy_host api.openai.com 'OPENAI_API_KEY present'
+    for entry in "${GATEWAY_BUILTINS[@]}"; do
+        read -r id key_name origin _ <<<"$entry"
+        [[ -z "$(runtime_value "$key_name")" ]] || policy_host "${origin#https://}" "${key_name} present"
+    done
     if [[ -n "$custom_url" ]]; then
         host=$(url_host "$custom_url") || return 1
         policy_host "$host" 'custom provider URL' || return 1

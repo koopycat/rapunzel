@@ -60,6 +60,7 @@ The allowlist is derived from the configuration:
 |---|---|
 | `ANTHROPIC_API_KEY` | `api.anthropic.com` |
 | `OPENAI_API_KEY` | `api.openai.com` |
+| `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY` | `openrouter.ai`, `generativelanguage.googleapis.com`, `api.groq.com`, `api.mistral.ai`, `api.deepseek.com`, `api.x.ai` |
 | `RAPUNZEL_API_BASE_URL` | that URL's host |
 | `RAPUNZEL_EGRESS_LOGINS` | the model API and token refresh hosts of each named `/login` provider, see [D11](#d11-login-providers-are-named-on-the-host) |
 | `RAPUNZEL_EGRESS_ALLOW` | each comma-separated host; `*.example.com` also matches `example.com` |
@@ -78,7 +79,7 @@ The proxy resolves names itself, and only after the allowlist check, so pi needs
 ### strict mode
 
 pi gets a placeholder key, and the bootstrap points its providers at `http://llm-proxy:8080`.
-Caddy holds the real keys and forwards three fixed routes, `/anthropic`, `/openai`, and `/custom`, always overwriting the auth headers.
+Caddy holds the real keys and forwards fixed routes, one per built-in provider with a key (`/anthropic`, `/openai`, `/openrouter`, `/google`, `/groq`, `/mistral`, `/deepseek`, `/xai`; table `GATEWAY_BUILTINS` in `lib/egress.sh`) plus `/custom`, always overwriting the auth headers and dropping a `key` query parameter.
 Everything else gets `403`.
 See the [guide](guide.md#strict-mode) for routes and limits.
 
