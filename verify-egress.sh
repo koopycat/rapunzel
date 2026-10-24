@@ -106,13 +106,38 @@ expect_checks() {
 
 section() { grep "^$2 " <<<"$1" || true; }
 
+# Encrypted Client Hello (docs/egress.md D16): Pipelock up to the pinned 3.7.1
+# reads only the plain server name, so an ECH hello with an allowed outer name
+# passes, and Pipelock offers no setting to refuse it. If a release ever does,
+# set this to true together with the pin and the config key; from then on a
+# forwarded ECH hello fails the check.
+PIPELOCK_REFUSES_ECH=false
+expect_ech() {
+    local line
+    line=$(section "$1" ECH)
+    if [[ -z "$line" ]]; then
+        fail "probe did not report the ECH check"
+    elif [[ "$PIPELOCK_REFUSES_ECH" == true ]]; then
+        if [[ "$line" == "ECH refused"* ]]; then
+            printf 'CHECK PASS Encrypted Client Hello refused (%s)\n' "${line#ECH }"
+        else
+            fail "the proxy forwarded an Encrypted Client Hello (${line#ECH })"
+        fi
+    elif [[ "$line" == "ECH forwarded"* ]]; then
+        printf 'KNOWN GAP (risk 3): the proxy forwards an Encrypted Client Hello with an allowed outer name (%s)\n' "${line#ECH }"
+    else
+        fail "the proxy unexpectedly refused an Encrypted Client Hello (${line#ECH }); if the pinned Pipelock can now refuse ECH, set PIPELOCK_REFUSES_ECH=true"
+    fi
+}
+
 check_allowlist() {
     printf '== allowlist with an API key (Pipelock CONNECT proxy, needs internet)\n'
     local key output env_line
     key="sk-dummy-$(random_token)"
     probe_args=(allowlist "$canary_port" api.openai.com)
     output=$(probe RAPUNZEL_EGRESS=allowlist OPENAI_API_KEY="$key")
-    expect_checks "$output" 20
+    expect_checks "$output" 22
+    expect_ech "$output"
     env_line=$(section "$output" ENV)
     # In this mode the agent holds the key by design.
     [[ "$env_line" == *"\"OPENAI_API_KEY\":\"${key}\""* ]] || fail "allowlist mode did not forward the provider key"
@@ -123,7 +148,8 @@ check_allowlist() {
     printf '== allowlist with a /login provider (openai-codex)\n'
     probe_args=(allowlist "$canary_port" chatgpt.com)
     output=$(probe RAPUNZEL_EGRESS=allowlist RAPUNZEL_EGRESS_LOGINS=openai-codex)
-    expect_checks "$output" 20
+    expect_checks "$output" 22
+    expect_ech "$output"
 
     check_private_host
 }
@@ -153,12 +179,14 @@ check_private_host() {
     printf '== allowlist with a private host in RAPUNZEL_EGRESS_ALLOW (%s)\n' "$name"
     probe_args=(allowlist "$canary_port" api.openai.com "${name}:${port}" refused)
     output=$(probe RAPUNZEL_EGRESS=allowlist OPENAI_API_KEY=sk-dummy RAPUNZEL_EGRESS_ALLOW="$name")
-    expect_checks "$output" 21
+    expect_checks "$output" 23
+    expect_ech "$output"
 
     printf '== allowlist with RAPUNZEL_EGRESS_ALLOW_PRIVATE (%s)\n' "$name"
     probe_args=(allowlist "$canary_port" api.openai.com "${name}:${port}" reachable)
     output=$(probe RAPUNZEL_EGRESS=allowlist OPENAI_API_KEY=sk-dummy RAPUNZEL_EGRESS_ALLOW_PRIVATE="$name")
-    expect_checks "$output" 21
+    expect_checks "$output" 23
+    expect_ech "$output"
     docker rm --force "$upstream" >/dev/null 2>&1 || true
 }
 

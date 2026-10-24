@@ -304,13 +304,27 @@ On 24 October 2026, Claude Code 2.1.309 in strict mode with only a setup token o
 **Limits.**
 The WebFetch domain preflight and fast mode's availability check call `api.anthropic.com` directly; the bootstrap sets `skipWebFetchPreflight`, and fast mode reports itself unavailable. A `/login` session in the volume (`.credentials.json`) cannot be protected; the bootstrap warns about it. Codex and dsh remain without strict support.
 
+### D16: Encrypted Client Hello is measured, not refused
+
+**Decision.**
+Measure ECH in `verify-egress.sh allowlist` and keep the gap documented; Pipelock is not modified, and rapunzel adds no filter of its own. The probe builds a TLS 1.3 ClientHello by hand, because Node's TLS client cannot send ECH: once without ECH, which must be forwarded, once naming another host, which must be refused, and once with an `encrypted_client_hello` extension (`0xfe0d`, outer form) and the allowed host as outer name. While the pinned Pipelock cannot refuse ECH, a forwarded ECH hello prints a known-gap line and passes; `PIPELOCK_REFUSES_ECH=true` in `verify-egress.sh` turns it into a failure if a Pipelock release ever offers a refusal setting and it is pinned and enabled.
+
+**Evidence.**
+On 24 October 2026, Pipelock 3.7.1 forwarded the ECH hello to `api.openai.com` and refused the same hello with another server name. Its SNI parser (`internal/proxy/sni.go`) reads only the `server_name` extension.
+
+**Why not elsewhere.**
+The agent controls its own TLS client, so turning ECH off there does not help. TLS interception would put a CA into the agent, which rapunzel avoids (D4). A purpose-built guard in front of Pipelock (D4 alternatives) would be a second network component to maintain for one check.
+
+**Limits.**
+Any future refusal would also refuse ECH GREASE, which uses the same extension type; Node, curl, and Go send none by default. Whether a CDN honors an ECH hello whose outer name is an arbitrary customer domain is not tested and does not change the decision.
+
 ## Residual risks
 
 Ranked by the security review:
 
 1. **Host code execution through the project mount (critical).** pi can write files the host later runs, such as `.git/hooks`, `.git/config` (`core.fsmonitor`, `core.hooksPath`), `.vscode/tasks.json`, `.envrc`, package scripts, CI workflows, and agent hook settings. Running git or opening an IDE afterwards bypasses every network control. Partly mitigated: `.git/config`, `.git/hooks`, and an in-project `core.hooksPath` are mounted read-only, and `rapunzel` reports changes to other host-executed files after each run (see [Files the host runs](guide.md#files-the-host-runs)). Everything except git config and hooks is detected, not prevented.
 2. **Data sent out through allowed hosts (high).** pi can send anything it reads to an allowed provider: under your key in `allowlist` mode, or under an attacker's key unless `strict` is used. The same applies to every host added with `RAPUNZEL_EGRESS_ALLOW` or `RAPUNZEL_EGRESS_LOGINS`. With a `/login` subscription, pi also holds a refresh token, which stays valid beyond the session if it leaks. Sign out (`/logout`) to revoke it after untrusted work.
-3. **Encrypted Client Hello (medium, unverified).** With ECH, the outer SNI can name an allowed host while the inner one names another site on the same CDN. Pipelock has no ECH handling.
+3. **Encrypted Client Hello (medium, confirmed at the proxy).** With ECH, the outer SNI can name an allowed host while the inner one names another site on the same CDN. `verify-egress.sh` shows that the pinned Pipelock forwards such a ClientHello; whether a given CDN then routes on the inner name is not tested. Pipelock offers no setting to refuse it, and rapunzel does not patch Pipelock ([D16](#d16-encrypted-client-hello-is-measured-not-refused)).
 4. **Allowlist creep (medium).** Each added host widens the path out.
 5. **Agent-volume tampering (medium).** Extensions, settings, and trust decisions persist in the agent volume and run again in the next session.
 6. **Sidecar compromise (medium).** A compromised sidecar has full egress. The per-run outbound network limits it to the internet.
