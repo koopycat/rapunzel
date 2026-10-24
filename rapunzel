@@ -54,7 +54,9 @@ Environment:
   RAPUNZEL_EGRESS         open (default), allowlist, or strict (docs/egress.md)
   RAPUNZEL_RUNS_DIR       Host-only metadata (default ~/.local/state/rapunzel/runs)
   RAPUNZEL_PORT           Host port for a harness web UI, on 127.0.0.1 (dsh)
-  RAPUNZEL_EGRESS_ALLOW   Extra hosts for allowlist mode, comma-separated
+  RAPUNZEL_EGRESS_ALLOW   Extra hosts for allowlist mode, comma-separated; in
+                          strict mode, hosts tools may reach next to the gateway
+                          (provider API hosts are refused)
   RAPUNZEL_EGRESS_LOGINS  /login providers for allowlist mode, comma-separated:
                           openai, openai-codex, anthropic, github-copilot
   RAPUNZEL_EGRESS_ALLOW_PRIVATE
@@ -467,6 +469,23 @@ if [[ "$EGRESS" != open ]]; then
         GW_CUSTOM_KEY=$(runtime_value "${key_variable:-RAPUNZEL_API_KEY}")
         GW_CUSTOM_API=$(runtime_value RAPUNZEL_API)
         gateway_configure "$egress_dir"
+        if [[ ${#EGRESS_HOSTS[@]} -gt 0 ]]; then
+            # Tools get a CONNECT allowlist next to the gateway. Model traffic
+            # is plain http:// to the gateway, which HTTPS_PROXY never covers;
+            # NO_PROXY makes that explicit for clients that also proxy http.
+            gateway_own_sidecar
+            allowlist_configure "$egress_dir"
+            cp -- "${egress_dir}/pipelock.yaml" "${RUN_DIR}/pipelock.yaml"
+            allowlist_start "$egress_dir"
+            printf 'rapunzel: tools may reach %s; model APIs only through the gateway\n' "${EGRESS_HOSTS[*]}" >&2
+            args+=(
+                --env "HTTPS_PROXY=${EGRESS_PROXY_URL}"
+                --env "https_proxy=${EGRESS_PROXY_URL}"
+                --env NODE_USE_ENV_PROXY=1
+                --env "NO_PROXY=${GATEWAY_ALIAS}"
+                --env "no_proxy=${GATEWAY_ALIAS}"
+            )
+        fi
         gateway_start "$egress_dir"
         args+=(
             --env "RAPUNZEL_GATEWAY_URL=${GATEWAY_URL}"

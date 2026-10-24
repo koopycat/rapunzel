@@ -679,6 +679,20 @@ The gateway always overwrites the route's header, removes the other credential h
 Requests and responses are otherwise passed through unchanged and streamed without buffering.
 Credentials can come from the host environment or from `RAPUNZEL_ENV_FILE`; the gateway reads them from a temporary env-file that is deleted after the run.
 
+#### Tools next to the gateway
+
+Package installs and `git clone` need more than the model API.
+`RAPUNZEL_EGRESS_ALLOW` in strict mode lets the harness's tools reach the listed hosts through a Pipelock allowlist proxy, the same one `allowlist` mode uses, while the provider key stays in the gateway:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... RAPUNZEL_EGRESS=strict \
+  RAPUNZEL_EGRESS_ALLOW=registry.npmjs.org,github.com,codeload.github.com rapunzel
+```
+
+`rapunzel` refuses an entry that equals or covers a provider's API host, such as `*.anthropic.com` or `openrouter.ai`: there pi could use the provider with a key of its own, which is exactly what strict mode prevents.
+Each listed host is still a way out for what pi reads, so keep the list short.
+`RAPUNZEL_EGRESS_ALLOW_PRIVATE`, `RAPUNZEL_EGRESS_LOGINS`, and `rapunzel-ctl` grants work in `allowlist` mode only.
+
 Limitations of strict mode:
 
 - Only the routes above are supported; the provider table lives in `GATEWAY_BUILTINS` in `lib/egress.sh`. Other provider keys, `RAPUNZEL_HEADERS_JSON`, and proxy variables are not passed, and `rapunzel` names them in a warning.
