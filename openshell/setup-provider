@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+
+usage() {
+    cat >&2 <<'EOF'
+Usage: setup-provider anthropic
+
+ANTHROPIC_API_KEY must already be present in the calling environment.
+
+OpenShell imports the profile and stores the credential outside sandboxes.
+EOF
+    exit 2
+}
+
+[[ $# -eq 1 ]] || usage
+command -v openshell >/dev/null 2>&1 || {
+    printf 'setup-provider: openshell is not installed\n' >&2
+    exit 1
+}
+
+case "$1" in
+    anthropic)
+        profile=${SCRIPT_DIR}/provider-anthropic.yaml
+        provider=pi-anthropic
+        key_name=ANTHROPIC_API_KEY
+        ;;
+    *) usage ;;
+esac
+
+[[ -n "${!key_name:-}" ]] || {
+    printf 'setup-provider: %s is not set\n' "$key_name" >&2
+    exit 1
+}
+
+openshell provider profile lint --file "$profile"
+openshell provider profile import --file "$profile"
+openshell provider create --name "$provider" --type "$provider" --from-existing
+
+printf 'Provider %s created. The real credential remains outside sandboxes.\n' "$provider"

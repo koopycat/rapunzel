@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+IMAGE=${OPENSHELL_PI_IMAGE:-pi-openshell:local}
+PROVIDER=${OPENSHELL_PI_PROVIDER:-pi-anthropic}
+POLICY=${OPENSHELL_PI_POLICY:-${SCRIPT_DIR}/policy.yaml}
+CPU=${OPENSHELL_PI_CPU:-4}
+MEMORY=${OPENSHELL_PI_MEMORY:-8Gi}
+
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  pi-openshell create PROJECT_DIR [-- PI_ARGUMENTS...]
+  pi-openshell connect SANDBOX
+  pi-openshell exec SANDBOX COMMAND...
+  pi-openshell export SANDBOX DESTINATION
+  pi-openshell delete SANDBOX
+
+create uploads a sanitized Git snapshot of PROJECT_DIR to /workspace. It does
+not bind-mount the host repository. Changes return to the host only through an
+explicit export into a destination path that does not already exist.
+
+Environment:
+  OPENSHELL_PI_IMAGE       Image reference (default: pi-openshell:local)
+  OPENSHELL_PI_PROVIDER    Attached provider (default: pi-anthropic)
+  OPENSHELL_PI_POLICY      Policy YAML (default: openshell/policy.yaml)
+  OPENSHELL_PI_CPU         CPU limit (default: 4)
+  OPENSHELL_PI_MEMORY      Memory limit (default: 8Gi)
+  OPENSHELL_PI_NAME        Explicit sandbox name for create
+  OPENSHELL_PI_ALLOW_SENSITIVE_UPLOAD=1  Permit suspicious credential filenames
+EOF
+    exit 2
+}
+
+die() {
+    printf 'pi-openshell: %s\n' "$*" >&2
+    exit 1
+}
+
+require_openshell() {
+    command -v openshell >/dev/null 2>&1 || die 'openshell is not installed'
+}
+
+validate_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid sandbox name: $1"
+}
+
+default_name() {
+    local base hash
+    base=$(basename "$1" | tr -cs '[:alnum:]._- ' '-' | tr '[:upper:] ' '[:lower:]-')
+    base=${base#-}
+    base=${base%-}
+    if command -v shasum >/dev/null 2>&1; then
+        hash=$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)
+    elif command -v sha256sum >/dev/null 2>&1; then
+        hash=$(printf '%s' "$1" | sha256sum | cut -c1-8)
+    else
+        die 'shasum or sha256sum is required'
+    fi
+    printf 'pi-%s-%s' "${base:-project}" "$hash"
+}
+
+create_snapshot() {
+    local project_dir=$1 snapshot list path
+    git -C "$project_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+        die 'create requires a Git working tree so upload filtering is explicit'
+    [[ "$(git -C "$project_dir" rev-parse --show-toplevel)" == "$project_dir" ]] || \
+        die 'create must point at the root of a Git working tree'
+
+    snapshot=$(mktemp -d "${TMPDIR:-/tmp}/pi-openshell-snapshot.XXXXXXXX")
+    list="${snapshot}.files"
+    if [[ -n "$(git -C "$project_dir" ls-files --stage | awk '$1 == "160000" { print; exit }')" ]]; then
+        rm -rf "$snapshot" "$list"
+        die 'submodules are not supported; create a separate sanitized source tree'
+    fi
+    git -C "$project_dir" ls-files --cached --others --exclude-standard -z | \
+        while IFS= read -r -d '' path; do
+            [[ -e "$project_dir/$path" || -L "$project_dir/$path" ]] && printf '%s\0' "$path"
+        done >"$list"
+
+    if [[ "${OPENSHELL_PI_ALLOW_SENSITIVE_UPLOAD:-0}" != 1 ]]; then
+        suspicious=
+        while IFS= read -r -d '' path; do
+            case "/$path" in
+                */.env.example|*/.env.template) ;;
+                */.env|*/.env.*|*/.npmrc|*/.pypirc|*/id_rsa|*/id_ed25519|*.pem|*.key)
+                    suspicious=$path
+                    break
+                    ;;
+            esac
+        done <"$list"
+        if [[ -n "$suspicious" ]]; then
+            rm -rf "$snapshot" "$list"
+            die "refusing suspicious upload path: $suspicious (set OPENSHELL_PI_ALLOW_SENSITIVE_UPLOAD=1 to override)"
+        fi
+    fi
+
+    if [[ -s "$list" ]]; then
+        tar -C "$project_dir" --null -T "$list" -cf - | tar -C "$snapshot" -xf -
+    fi
+    rm -f "$list"
+
+    # A synthetic repository gives Pi useful status/diff behavior without
+    # exposing the host repository's config, refs, hooks, or remote credentials.
+    git -C "$snapshot" init -q
+    git -C "$snapshot" add -A
+    git -C "$snapshot" \
+        -c user.name=pi-openshell \
+        -c user.email=pi-openshell@invalid \
+        commit -q --allow-empty -m 'OpenShell upload baseline'
+    printf '%s' "$snapshot"
+}
+
+require_new_destination() {
+    local destination=$1
+    [[ ! -e "$destination" && ! -L "$destination" ]] || \
+        die "export destination must not exist: $destination"
+    mkdir -p "$(dirname -- "$destination")"
+}
+
+[[ $# -ge 1 ]] || usage
+require_openshell
+command=$1
+shift
+
+case "$command" in
+    create)
+        [[ $# -ge 1 ]] || usage
+        project_input=$1
+        shift
+        [[ -d "$project_input" ]] || die "project directory does not exist: $project_input"
+        project_dir=$(cd -- "$project_input" && pwd -P)
+        [[ -f "$POLICY" ]] || die "policy does not exist: $POLICY"
+        policy=$(cd -- "$(dirname -- "$POLICY")" && printf '%s/%s' "$PWD" "$(basename -- "$POLICY")")
+        name=${OPENSHELL_PI_NAME:-$(default_name "$project_dir")}
+        validate_name "$name"
+        if [[ $# -gt 0 ]]; then
+            [[ "$1" == -- ]] || die 'place -- before Pi arguments'
+            shift
+        fi
+        snapshot=$(create_snapshot "$project_dir")
+        trap 'rm -rf "$snapshot"' EXIT
+        printf 'Creating sandbox %s from a sanitized copy of %s\n' "$name" "$project_dir"
+        printf 'Host files will not be modified; export to a new directory to retrieve changes.\n'
+        (
+            cd -- "$snapshot"
+            openshell sandbox create \
+                --name "$name" \
+                --from "$IMAGE" \
+                --provider "$PROVIDER" \
+                --policy "$policy" \
+                --cpu "$CPU" \
+                --memory "$MEMORY" \
+                --approval-mode manual \
+                --no-auto-providers \
+                --upload .:/workspace \
+                --no-git-ignore \
+                -- pi "$@"
+        )
+        ;;
+    connect)
+        [[ $# -eq 1 ]] || usage
+        validate_name "$1"
+        exec openshell sandbox connect "$1"
+        ;;
+    exec)
+        [[ $# -ge 2 ]] || usage
+        name=$1
+        shift
+        validate_name "$name"
+        exec openshell sandbox exec --name "$name" --workdir /workspace -- "$@"
+        ;;
+    export)
+        [[ $# -eq 2 ]] || usage
+        name=$1
+        destination=$2
+        validate_name "$name"
+        require_new_destination "$destination"
+        parent=$(cd -- "$(dirname -- "$destination")" && pwd -P)
+        destination="${parent}/$(basename -- "$destination")"
+        temporary=$(mktemp -d "${parent}/.pi-openshell-export.XXXXXXXX")
+        trap 'rm -rf "$temporary"' EXIT
+        printf 'Exporting %s:/workspace to %s\n' "$name" "$destination"
+        openshell sandbox download "$name" /workspace "$temporary"
+        mv -- "$temporary" "$destination"
+        trap - EXIT
+        printf 'Review the export before copying or applying changes to the original repository.\n'
+        ;;
+    delete)
+        [[ $# -eq 1 ]] || usage
+        validate_name "$1"
+        exec openshell sandbox delete "$1"
+        ;;
+    *) usage ;;
+esac

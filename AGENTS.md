@@ -8,6 +8,8 @@
 - `./pi-ext sync|list [PROJECT_DIR]`
 - `./test.sh`
 - `./verify-isolation.sh [project-directory]`
+- `docker build -t pi-openshell:local -f openshell/Dockerfile .`
+- `./openshell/pi-openshell create PROJECT_DIR [-- pi arguments...]`
 
 ## Invariants
 
@@ -18,3 +20,7 @@
 - Only allowlisted environment names enter the container; `PI_DOCKER_ENV_FILE` is filtered through the same allowlist and `PI_DOCKER_API_KEY_VARIABLE` must name an allowed variable.
 - Secrets enter at runtime through a Docker env-file or explicitly forwarded variables.
 - Do not mount the host home directory, `~/.pi`, or `~/.ssh`.
+- The OpenShell alternative uploads a filtered repository copy; never replace it
+  with a host bind mount or export directly over the source repository.
+- OpenShell's default policy must deny ordinary network access, require Landlock,
+  and obtain inference credentials only through an attached provider.

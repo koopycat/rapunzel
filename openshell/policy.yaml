@@ -1,0 +1,21 @@
+version: 1
+
+# An uploaded snapshot is the only writable project state. Paths not listed by
+# this policy are unavailable; OpenShell supplies its runtime baseline paths.
+filesystem_policy:
+  include_workdir: true
+  read_write:
+    - /tmp
+    - /home/node/.pi/agent
+
+# Never continue silently if the kernel cannot enforce the filesystem policy.
+landlock:
+  compatibility: hard_requirement
+
+process:
+  run_as_user: "1000"
+  run_as_group: "1000"
+
+# Deny all ordinary outbound traffic. Attached providers contribute reserved
+# _provider_* rules for model traffic and inject credentials outside the sandbox.
+network_policies: {}

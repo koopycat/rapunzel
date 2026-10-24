@@ -1,0 +1,27 @@
+id: pi-anthropic
+display_name: Pi with Anthropic
+description: Anthropic inference access restricted to Pi's Node.js runtime
+category: agent
+inference_capable: true
+
+credentials:
+  - name: api_key
+    description: Anthropic API key used by Pi
+    env_vars: [ANTHROPIC_API_KEY]
+    required: true
+    auth_style: header
+    header_name: x-api-key
+
+discovery:
+  credentials: [api_key]
+
+endpoints:
+  - host: api.anthropic.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+
+binaries:
+  - /usr/local/bin/pi
+  - /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/**

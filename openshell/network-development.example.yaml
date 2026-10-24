@@ -1,0 +1,29 @@
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_write:
+    - /tmp
+    - /home/node/.pi/agent
+
+landlock:
+  compatibility: hard_requirement
+
+process:
+  run_as_user: "1000"
+  run_as_group: "1000"
+
+# Optional development policy. Copy this file, remove endpoints the project does
+# not need, and pass it through OPENSHELL_PI_POLICY. Provider traffic is separate.
+# Add source-host rules only after confirming the actual transport helper paths
+# and HTTP methods in the image; Git HTTPS commonly delegates to git-remote-https.
+network_policies:
+  npm_registry:
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+    binaries:
+      - path: /usr/local/bin/node

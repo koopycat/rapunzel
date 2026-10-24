@@ -1,8 +1,13 @@
-# Isolated pi Docker runner
+# Isolated pi runners
 
-This repository provides a small Docker image and a `pi-project` wrapper for running the pi coding agent with one project bind-mounted into the container.
+This repository provides two approaches for running the pi coding agent:
 
-The design follows pi's official [Plain Docker](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/containerization.md) pattern, while adding a non-root runtime user, an isolated named volume, runtime provider configuration, and an isolation check.
+- The default plain-Docker runner bind-mounts one project into a hardened container.
+- The alternative [OpenShell blueprint](openshell/README.md) uploads an isolated
+  copy, keeps provider keys outside the sandbox, denies ordinary network access,
+  and requires an explicit export before changes reach the host.
+
+The Docker design follows pi's official [Plain Docker](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/containerization.md) pattern, while adding a non-root runtime user, an isolated named volume, runtime provider configuration, and an isolation check.
 
 ## Quick start
 

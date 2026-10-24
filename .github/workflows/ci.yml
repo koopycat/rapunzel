@@ -19,6 +19,9 @@ jobs:
             pi-docker-shell \
             pi-ext \
             pi-project \
+            openshell/pi-openshell \
+            openshell/setup-provider \
+            openshell/test.sh \
             setup-identity.sh \
             test.sh \
             verify-isolation-inner.sh \
@@ -27,8 +30,13 @@ jobs:
       - name: Validate bootstrap config script
         run: node --check bootstrap-config.mjs
 
-      - name: Build image
-        run: docker build --pull -t pi-project-sandbox .
+      - name: Validate OpenShell blueprint
+        run: ./openshell/test.sh
+
+      - name: Build images
+        run: |
+          docker build --pull -t pi-project-sandbox .
+          docker build -t pi-openshell:local -f openshell/Dockerfile .
 
       - name: Offline smoke test
         run: ./test.sh
