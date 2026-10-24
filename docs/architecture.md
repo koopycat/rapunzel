@@ -7,7 +7,7 @@ A harness is the command-line agent that drives a model and acts on a project, s
 The pi coding agent is the default harness; Claude Code, Codex CLI, DeepSeek Harness (dsh), and opencode are further profiles, and Copilot CLI is planned.
 The agent sees one host directory, the project it works on, and keeps its own settings, logins, and sessions in a separate Docker volume per project and harness.
 It runs as the caller's user without root privileges or Linux capabilities, and receives only an allowlist of environment variables.
-Two optional egress modes restrict the network: `allowlist` lets the agent reach only named hosts through an SNI-checking HTTPS proxy, and `strict` (pi and opencode) additionally keeps provider API keys out of the container by placing them in a credential gateway.
+Two optional egress modes restrict the network: `allowlist` lets the agent reach only named hosts through an SNI-checking HTTPS proxy, and `strict` (pi, opencode, and Claude Code) additionally keeps provider API keys out of the container by placing them in a credential gateway.
 In `allowlist` mode, a host-side controller can grant or revoke single hosts while a run is live.
 Because an agent can also attack the host indirectly, by writing files that the host later runs, git hooks and git configuration are mounted read-only and changes to other host-executed files are reported after each run.
 Every one of these properties is checked by scripts that act as a hostile agent through the real launcher; they run in CI before any image is published.
@@ -17,7 +17,7 @@ Every one of these properties is checked by scripts that act as a hostile agent 
 1. **The boundary is outside the agent.** rapunzel does not rely on the agent's own permission prompts or sandbox. Docker, the launcher, and sidecar containers enforce every control, whichever harness runs inside.
 2. **One host directory, nothing else.** The project is mounted at `/workspace`. The host home directory, the harnesses' host directories such as `~/.pi` or `~/.claude`, `~/.ssh`, and the Docker socket are never mounted. Agent state lives in a named volume per project and harness.
 3. **No privileges.** The agent runs as the caller's numeric UID and GID, with all capabilities dropped and `no-new-privileges` set.
-4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts, which the operator can extend per run from the host. `strict` (pi and opencode) gives only fixed provider routes and no real API key.
+4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts, which the operator can extend per run from the host. `strict` (pi, opencode, and Claude Code) gives only fixed provider routes and no real API key.
 5. **The network boundary fails closed.** In both restricted modes the agent sits on a Docker `--internal` network with no route, no external DNS, and no host address. Anything that ignores the proxy has nowhere to go.
 6. **The host is protected from planted files.** Git hooks and git configuration are read-only inside the container, so the agent cannot make the host's git run its code. Other host-executed files are reported, not blocked.
 7. **Claims are tested, not assumed.** `verify-isolation.sh`, `verify-host-files.sh`, `verify-egress.sh`, and `verify-control.sh` probe the boundary through the real launcher. CI runs them on every change and before every image release.
@@ -147,7 +147,7 @@ A marker file records the owner, so later runs only read it.
 The entrypoint runs the profile's bootstrap on every start.
 pi's rewrites `models.json` and `settings.json`: it registers a custom provider from `RAPUNZEL_*` variables, points built-in providers at the credential gateway in strict mode, and removes those overrides again in other modes.
 opencode's builds the same custom provider in a rapunzel-owned config file and never edits the user's `opencode.json`.
-Claude Code's skips the login picker when a credential is set, and Codex's defaults `sandbox_mode` to `danger-full-access` because Codex's own bubblewrap sandbox cannot run in the container; values the user sets win.
+Claude Code's skips the login picker when a credential is set and, in strict mode, writes Claude Code's gateway settings into the `env` block of `settings.json`, and Codex's defaults `sandbox_mode` to `danger-full-access` because Codex's own bubblewrap sandbox cannot run in the container; values the user sets win.
 Because the managed entries are rewritten each time, an edit the agent makes to them does not persist.
 
 ### 4.4 Environment and credentials
@@ -170,7 +170,7 @@ How far they reach depends on the egress mode (section 4.5): in `open` and `allo
 |---|---|---|
 | `open` (default) | yes | the internet through Docker's `bridge` network |
 | `allowlist` | yes | only allowlisted hosts over HTTPS |
-| `strict` (pi, opencode) | no, only a placeholder | only fixed provider routes on a credential gateway |
+| `strict` (pi, opencode, Claude Code) | no, only a placeholder | only fixed provider routes on a credential gateway |
 
 Both restricted modes also set the harness's offline switches, for example `PI_OFFLINE` or `DISABLE_AUTOUPDATER`, because vendor update and telemetry hosts are unreachable.
 
@@ -205,11 +205,12 @@ It is never read from `auth.json` or anything else in the volume, because the ag
 
 **strict mode.**
 The sidecar is a Caddy reverse proxy that holds the real keys.
-pi's and opencode's bootstraps point their providers at `http://llm-proxy:8080`, and the agent holds the placeholder `rapunzel-gateway`.
+The bootstrap points the harness at `http://llm-proxy:8080` (pi's and opencode's providers, Claude Code's `ANTHROPIC_BASE_URL`), and the agent holds the placeholder `rapunzel-gateway`.
+For Claude Code the `/anthropic` route can also carry a host-issued subscription token from `claude setup-token`, set as `Authorization: Bearer`.
 Caddy forwards only `/anthropic`, `/openai`, and `/custom` to fixed upstreams, always overwrites the auth headers with the real key, and answers everything else with 403.
 Overwriting rather than swapping a placeholder matters: it stops the agent from using an allowed provider with an attacker's key to send data out.
-OAuth logins cannot use this mode, because the harness refreshes those tokens itself and keeps them in the volume.
-Claude Code, Codex, and dsh do not support `strict` yet, and the launcher refuses it for them.
+OAuth logins made inside the sandbox cannot use this mode, because the harness refreshes those tokens itself and keeps them in the volume.
+Codex and dsh do not support `strict` yet, and the launcher refuses it for them.
 
 **Extension providers.**
 A provider can come from a pi extension that reads its own variables, for example `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`.
@@ -302,7 +303,7 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 - **Docker Desktop and nested mounts.** On Docker Desktop 4.93 for macOS, the virtual machine shut down twice shortly after containers with the read-only git sub-mounts. The same mounts work on Colima and Linux. The cause is not confirmed. A fallback that hashes and restores git control files instead of mounting them would avoid nested mounts on Docker Desktop.
 - **WSL2** has not been tested.
 - **Clone-based workspace.** Letting the agent work in a container-local clone, and fetching its commits on the host for review, would close the host-executed-file risk without relying on reports.
-- **Other harnesses.** Claude Code is a profile (`profiles/claude`) with `open` and `allowlist` egress; `strict` needs a gateway route and placeholder key that Claude Code is not yet known to accept. Codex CLI is a profile (`profiles/codex`) with `open` and `allowlist` egress; its own bubblewrap sandbox cannot run in the container, so it runs with `sandbox_mode = "danger-full-access"` inside rapunzel's boundary. DeepSeek Harness is a profile (`profiles/dsh`) whose default command is a web UI: the launcher publishes it on the host's `127.0.0.1` only, in `open` mode only, because Docker cannot publish ports from the `--internal` network of the restricted modes; reaching it through the sidecar would lift that limit. opencode is a profile (`profiles/opencode`) with `open` and `allowlist` egress; it has no single home variable, so its image points the four XDG base directories into the volume and the profile leaves `H_STATE_ENV` empty. Its bootstrap turns pi's custom-provider variables into an opencode provider, listing the endpoint's models at startup, in a rapunzel-owned file that the image loads through `OPENCODE_CONFIG`; the user's own `opencode.json` is never edited, and the key appears only as an `{env:...}` reference. In `strict` mode the same file points the custom provider and the built-in `anthropic` and `openai` providers at the credential gateway with the placeholder key, so opencode, like pi, never holds a real key. Copilot CLI would plug into the same launcher as a further profile. Copilot needs `api.github.com`, which exposes GitHub's whole API, so it should be opt-in.
+- **Other harnesses.** Claude Code is a profile (`profiles/claude`) with `open`, `allowlist`, and `strict` egress; in strict mode its bootstrap writes Claude Code's documented LLM-gateway settings (base URL plus placeholder) into the volume's `settings.json` ([D15](egress.md#d15-claude-code-through-the-credential-gateway)). Codex CLI is a profile (`profiles/codex`) with `open` and `allowlist` egress; its own bubblewrap sandbox cannot run in the container, so it runs with `sandbox_mode = "danger-full-access"` inside rapunzel's boundary. DeepSeek Harness is a profile (`profiles/dsh`) whose default command is a web UI: the launcher publishes it on the host's `127.0.0.1` only, in `open` mode only, because Docker cannot publish ports from the `--internal` network of the restricted modes; reaching it through the sidecar would lift that limit. opencode is a profile (`profiles/opencode`) with `open` and `allowlist` egress; it has no single home variable, so its image points the four XDG base directories into the volume and the profile leaves `H_STATE_ENV` empty. Its bootstrap turns pi's custom-provider variables into an opencode provider, listing the endpoint's models at startup, in a rapunzel-owned file that the image loads through `OPENCODE_CONFIG`; the user's own `opencode.json` is never edited, and the key appears only as an `{env:...}` reference. In `strict` mode the same file points the custom provider and the built-in `anthropic` and `openai` providers at the credential gateway with the placeholder key, so opencode, like pi, never holds a real key. Copilot CLI would plug into the same launcher as a further profile. Copilot needs `api.github.com`, which exposes GitHub's whole API, so it should be opt-in.
 - **Reproducible builds.** Pinning pi's transitive dependencies would remove risk 6.
 
 ## Appendix A: Configuration reference

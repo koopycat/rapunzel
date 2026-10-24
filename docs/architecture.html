@@ -394,7 +394,7 @@
       <dl class="m strict">
         <div><dt>Agent holds your API key</dt><dd class="verdict no">No, only a placeholder</dd></div>
         <div><dt>Agent can reach</dt><dd>Fixed provider routes on the gateway. Everything else gets a 403 or has no route.</dd></div>
-        <div><dt>Pick it when</dt><dd>The key must not leak. Works with pi and opencode and API keys, not subscription logins.</dd></div>
+        <div><dt>Pick it when</dt><dd>The key must not leak. Works with pi, opencode, and Claude Code (including a Claude setup token), not with logins made inside the sandbox.</dd></div>
       </dl>
     </div>
   </div>
@@ -475,7 +475,7 @@
       <thead><tr><th scope="col">Harness</th><th scope="col">Network modes</th><th scope="col">Sign in with</th><th scope="col">Start it</th></tr></thead>
       <tbody>
         <tr><td>pi</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag">strict</span></td><td>Provider keys, a custom endpoint, or <code>/login</code></td><td><code>rapunzel</code></td></tr>
-        <tr><td>Claude Code</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag off">strict</span></td><td><code>ANTHROPIC_API_KEY</code> or a subscription token from <code>claude setup-token</code></td><td><code>rapunzel-claude</code></td></tr>
+        <tr><td>Claude Code</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag">strict</span></td><td><code>ANTHROPIC_API_KEY</code> or a subscription token from <code>claude setup-token</code></td><td><code>rapunzel-claude</code></td></tr>
         <tr><td>Codex CLI</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag off">strict</span></td><td><code>OPENAI_API_KEY</code> or a ChatGPT device login</td><td><code>rapunzel-codex</code></td></tr>
         <tr><td>DeepSeek Harness</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span> headless only<span class="mode-tag off">strict</span></td><td><code>DEEPSEEK_API_KEY</code>; web UI on <code>127.0.0.1</code></td><td><code>rapunzel-dsh</code></td></tr>
         <tr><td>opencode</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag">strict</span></td><td>Provider keys, a custom endpoint, Zen, or <code>opencode auth login</code></td><td><code>rapunzel-opencode</code></td></tr>

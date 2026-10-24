@@ -39,6 +39,7 @@ EGRESS_PRIVATE_HOSTS=()
 EGRESS_LIB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 GATEWAY_PROVIDERS=""
 GATEWAY_CUSTOM=false
+GATEWAY_ANTHROPIC_AUTH=""
 
 # Every per-run resource names its launcher, so a later run can remove what a
 # killed one left behind (D13).
@@ -255,8 +256,9 @@ allowlist_start() {
 }
 
 # Render the Caddyfile and the gateway env-file into DIR.
-# Reads GW_ANTHROPIC_KEY, GW_OPENAI_KEY, GW_CUSTOM_URL, GW_CUSTOM_KEY and
-# GW_CUSTOM_API. Sets GATEWAY_PROVIDERS and GATEWAY_CUSTOM.
+# Reads GW_ANTHROPIC_KEY, GW_ANTHROPIC_OAUTH, GW_OPENAI_KEY, GW_CUSTOM_URL,
+# GW_CUSTOM_KEY and GW_CUSTOM_API. Sets GATEWAY_PROVIDERS, GATEWAY_CUSTOM and
+# GATEWAY_ANTHROPIC_AUTH (api-key or oauth).
 gateway_configure() {
     local dir=${1:?gateway_configure requires a directory}
     local caddyfile="${dir}/Caddyfile" envfile="${dir}/gateway.env"
@@ -267,10 +269,19 @@ gateway_configure() {
 
     # Secrets stay in the env-file and are read through {env.*} at request
     # time, so the rendered config itself contains none.
+    # An API key wins over a subscription token, as in Claude Code itself. The
+    # token (from `claude setup-token`) authenticates as a Bearer credential;
+    # Claude Code adds the OAuth anthropic-beta value, which Caddy forwards.
     if [[ -n "${GW_ANTHROPIC_KEY:-}" ]]; then
         printf 'GW_ANTHROPIC_KEY=%s\n' "$GW_ANTHROPIC_KEY" >>"$envfile"
         routes+=$(_gateway_route /anthropic https://api.anthropic.com "" x-api-key GW_ANTHROPIC_KEY)$'\n'
         GATEWAY_PROVIDERS+="anthropic,"
+        GATEWAY_ANTHROPIC_AUTH=api-key
+    elif [[ -n "${GW_ANTHROPIC_OAUTH:-}" ]]; then
+        printf 'GW_ANTHROPIC_OAUTH=%s\n' "$GW_ANTHROPIC_OAUTH" >>"$envfile"
+        routes+=$(_gateway_route /anthropic https://api.anthropic.com "" bearer GW_ANTHROPIC_OAUTH)$'\n'
+        GATEWAY_PROVIDERS+="anthropic,"
+        GATEWAY_ANTHROPIC_AUTH=oauth
     fi
     if [[ -n "${GW_OPENAI_KEY:-}" ]]; then
         printf 'GW_OPENAI_KEY=%s\n' "$GW_OPENAI_KEY" >>"$envfile"

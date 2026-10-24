@@ -6,7 +6,7 @@ Each harness is a profile in `profiles/<name>/` with its own image and its own p
 | Harness | `--harness` | Image | State directory (volume) | Credentials | Egress modes |
 |---|---|---|---|---|---|
 | pi (default) | `pi` | `rapunzel` | `/home/agent/.pi/agent` | provider keys, custom providers, `/login` | `open`, `allowlist`, `strict` |
-| Claude Code | `claude` | `rapunzel:claude` | `/home/agent/.claude` | `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` from the host's `claude setup-token` | `open`, `allowlist` |
+| Claude Code | `claude` | `rapunzel:claude` | `/home/agent/.claude` | `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` from the host's `claude setup-token` | `open`, `allowlist`, `strict` |
 | Codex CLI | `codex` | `rapunzel:codex` | `/home/agent/.codex` | `OPENAI_API_KEY`/`CODEX_API_KEY`, or a ChatGPT login inside the sandbox | `open`, `allowlist` |
 | DeepSeek Harness | `dsh` | `rapunzel:dsh` | `/home/agent/.dsh` | `DEEPSEEK_API_KEY` | web UI: `open`; headless: `open`, `allowlist` |
 | opencode | `opencode` | `rapunzel:opencode` | `/home/agent/.opencode-state` | provider keys, custom providers, `OPENCODE_API_KEY` (Zen), or `opencode auth login` inside the sandbox | `open`, `allowlist`, `strict` |
@@ -195,7 +195,7 @@ Egress:
 
 - `allowlist` always allows `api.anthropic.com`, which is enough for both an API key and a setup token. An interactive subscription login also needs `RAPUNZEL_EGRESS_LOGINS=anthropic` and `RAPUNZEL_EGRESS_ALLOW=claude.ai`.
 - Both restricted modes set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `DISABLE_AUTOUPDATER=1`.
-- `strict` is refused: pointing Claude Code at the gateway with a placeholder key is untested, and a subscription token cannot go through the gateway at all, because the gateway replaces auth headers with its own key.
+- `strict` works with either credential. The gateway holds the real API key or setup token; `profiles/claude/bootstrap.mjs` writes Claude Code's documented [LLM-gateway settings](https://code.claude.com/docs/en/llm-gateway-connect) into the `env` block of the volume's `settings.json`: `ANTHROPIC_BASE_URL=http://llm-proxy:8080/anthropic` and the placeholder `rapunzel-gateway` in `ANTHROPIC_AUTH_TOKEN` (API key) or `CLAUDE_CODE_OAUTH_TOKEN` (setup token). A setup token keeps its plan limits, because Claude Code still authenticates with OAuth. The bootstrap also turns off the WebFetch domain preflight, which calls `api.anthropic.com` directly, and removes these entries again on the next run outside strict mode. An interactive `/login` session in the volume cannot be protected; the bootstrap warns when `.credentials.json` exists.
 
 Claude Code honors `HTTPS_PROXY`, so it reaches the allowlist proxy like pi.
 It retries an API error up to ten times with backoff, so a failing `claude -p` can take minutes to return.
@@ -665,12 +665,12 @@ ANTHROPIC_API_KEY=sk-ant-... RAPUNZEL_EGRESS=strict rapunzel
 ```
 
 The sidecar is a [Caddy](https://caddyserver.com/) reverse proxy that holds the real keys.
-The bootstrap points pi's providers at `http://llm-proxy:8080` with the placeholder key `rapunzel-gateway`.
+The bootstrap points the harness's providers at `http://llm-proxy:8080` with the placeholder key `rapunzel-gateway` (pi, opencode, and Claude Code support strict mode).
 The gateway serves only fixed routes and answers everything else with `403`:
 
 | Route | Upstream | Credential | Header the gateway sets |
 |---|---|---|---|
-| `/anthropic/*` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `x-api-key` |
+| `/anthropic/*` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY`, or for Claude Code `CLAUDE_CODE_OAUTH_TOKEN` (the API key wins) | `x-api-key` for the key, `Authorization: Bearer` for the token |
 | `/openai/*` | `https://api.openai.com` | `OPENAI_API_KEY` | `Authorization: Bearer` |
 | `/custom/*` | `RAPUNZEL_API_BASE_URL` | `RAPUNZEL_API_KEY` or `RAPUNZEL_API_KEY_VARIABLE` | `x-api-key` for `anthropic-messages`, otherwise `Authorization: Bearer` |
 

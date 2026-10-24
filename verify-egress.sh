@@ -24,8 +24,9 @@ ROOT_DIR=$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)
 # shellcheck source=lib/docker.sh
 source "${ROOT_DIR}/lib/docker.sh"
 IMAGE=${RAPUNZEL_IMAGE:-rapunzel}
-# Checked in strict mode as well when this image has been built.
+# Checked in strict mode as well when these images have been built.
 OPENCODE_IMAGE=${RAPUNZEL_OPENCODE_IMAGE:-rapunzel:opencode}
+CLAUDE_IMAGE=${RAPUNZEL_CLAUDE_IMAGE:-rapunzel:claude}
 VOLUME=${RAPUNZEL_VOLUME:-rapunzel-egress-check}
 MODES=("$@")
 [[ ${#MODES[@]} -gt 0 ]] || MODES=(allowlist strict)
@@ -295,6 +296,66 @@ check_strict_opencode() {
     docker rm --force "$upstream" >/dev/null 2>&1 || true
 }
 
+# Claude Code in strict mode: its bootstrap must point the documented gateway
+# settings at /anthropic with the placeholder, for an API key and for a
+# subscription token, keep both out of the sandbox, and remove its entries
+# again on a run outside strict mode. The upstream is fixed to
+# api.anthropic.com, so the header rewrite itself is checked in test-control.sh.
+claude_run() {
+    env -u RAPUNZEL_NETWORK -u RAPUNZEL_BASE_URL -u RAPUNZEL_API_BASE_URL -u OPENAI_API_KEY \
+        -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
+        -u RAPUNZEL_EGRESS_ALLOW -u RAPUNZEL_EGRESS_LOGINS -u RAPUNZEL_EGRESS_ALLOW_PRIVATE \
+        RAPUNZEL_ENV_FILE= \
+        RAPUNZEL_HARNESS=claude \
+        RAPUNZEL_IMAGE="$CLAUDE_IMAGE" \
+        RAPUNZEL_VOLUME="${VOLUME}-claude" \
+        "$@" \
+        "${ROOT_DIR}/rapunzel" --exec "$project" node -e '
+            const fs = require("node:fs"), path = require("node:path");
+            const dir = "/home/agent/.claude", files = {};
+            const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+                const f = path.join(d, e.name);
+                if (e.isDirectory()) walk(f); else if (e.isFile()) files[f] = fs.readFileSync(f, "utf8"); } };
+            walk(dir);
+            let settings = {};
+            try { settings = JSON.parse(files[path.join(dir, "settings.json")] ?? "{}"); } catch {}
+            console.log("SETTINGS " + JSON.stringify(settings));
+            console.log("ENV " + JSON.stringify(process.env));
+            console.log("FILES " + JSON.stringify(files));
+        ' 2>&1
+}
+
+check_strict_claude() {
+    local kind variable placeholder secret output settings_line
+    for kind in api-key oauth; do
+        printf '== strict with the claude harness (%s)\n' "$kind"
+        secret="pd-secret-$(random_token)"
+        variable=ANTHROPIC_API_KEY placeholder=ANTHROPIC_AUTH_TOKEN
+        if [[ "$kind" == oauth ]]; then variable=CLAUDE_CODE_OAUTH_TOKEN placeholder=CLAUDE_CODE_OAUTH_TOKEN; fi
+        output=$(claude_run RAPUNZEL_EGRESS=strict "${variable}=${secret}")
+        settings_line=$(section "$output" SETTINGS)
+        [[ -n "$settings_line" && -n "$(section "$output" ENV)" && -n "$(section "$output" FILES)" ]] || {
+            printf '%s\n' "$output" >&2
+            fail "claude probe output is incomplete"
+            continue
+        }
+        [[ "$output" != *"$secret"* ]] || fail "the real ${variable} reached the claude sandbox"
+        jq -e --arg placeholder "$placeholder" '.env.ANTHROPIC_BASE_URL == "http://llm-proxy:8080/anthropic"
+            and .env[$placeholder] == "rapunzel-gateway" and .skipWebFetchPreflight == true' \
+            <<<"${settings_line#SETTINGS }" >/dev/null || fail "claude's settings do not point at the gateway (${kind})"
+        printf 'CHECK PASS claude uses the gateway with %s=rapunzel-gateway\n' "$placeholder"
+    done
+
+    printf '== claude after strict mode, in allowlist mode\n'
+    output=$(claude_run RAPUNZEL_EGRESS=allowlist ANTHROPIC_API_KEY=sk-dummy)
+    settings_line=$(section "$output" SETTINGS)
+    jq -e '(.env // {}) | has("ANTHROPIC_BASE_URL") or has("ANTHROPIC_AUTH_TOKEN") or has("CLAUDE_CODE_OAUTH_TOKEN") | not' \
+        <<<"${settings_line#SETTINGS }" >/dev/null || fail "claude kept the gateway entries outside strict mode"
+    jq -e 'has("skipWebFetchPreflight") | not' <<<"${settings_line#SETTINGS }" >/dev/null ||
+        fail "claude kept the WebFetch preflight switch outside strict mode"
+    printf 'CHECK PASS claude removed its gateway settings outside strict mode\n'
+}
+
 for mode in "${MODES[@]}"; do
     case "$mode" in
         allowlist) check_allowlist ;;
@@ -304,6 +365,11 @@ for mode in "${MODES[@]}"; do
                 check_strict_opencode
             else
                 printf '== strict with the opencode harness: skipped, %s is not built\n' "$OPENCODE_IMAGE"
+            fi
+            if docker image inspect "$CLAUDE_IMAGE" >/dev/null 2>&1; then
+                check_strict_claude
+            else
+                printf '== strict with the claude harness: skipped, %s is not built\n' "$CLAUDE_IMAGE"
             fi
             ;;
         *)

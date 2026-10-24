@@ -91,6 +91,28 @@ grep -q 'sni_verification: true' "$test_dir/pipelock.yaml"
 grep -q 'sni_require_tls: true' "$test_dir/pipelock.yaml"
 grep -q '    max_requests_per_minute: 1000000' "$test_dir/pipelock.yaml"
 
+# Strict gateway: an Anthropic API key authenticates with X-Api-Key, a
+# subscription token with Authorization: Bearer; the key wins over the token,
+# and no secret ever appears in the rendered Caddyfile.
+gateway_render() {
+    (
+        GATEWAY_PROVIDERS="" GATEWAY_ANTHROPIC_AUTH=""
+        GW_ANTHROPIC_KEY=$1 GW_ANTHROPIC_OAUTH=$2 GW_OPENAI_KEY="" GW_CUSTOM_URL=""
+        gateway_configure "$test_dir"
+        printf '%s\n' "$GATEWAY_ANTHROPIC_AUTH"
+    )
+}
+[[ "$(gateway_render secret-api-key '')" == api-key ]]
+grep -q 'header_up X-Api-Key {env.GW_ANTHROPIC_KEY}' "$test_dir/Caddyfile"
+grep -q 'header_up -Authorization' "$test_dir/Caddyfile"
+[[ "$(gateway_render '' secret-oauth-token)" == oauth ]]
+grep -q 'header_up Authorization "Bearer {env.GW_ANTHROPIC_OAUTH}"' "$test_dir/Caddyfile"
+grep -q 'header_up -X-Api-Key' "$test_dir/Caddyfile"
+grep -qx 'GW_ANTHROPIC_OAUTH=secret-oauth-token' "$test_dir/gateway.env"
+[[ "$(gateway_render secret-api-key secret-oauth-token)" == api-key ]]
+if grep -q GW_ANTHROPIC_OAUTH "$test_dir/Caddyfile"; then exit 1; fi
+if grep -q 'secret-' "$test_dir/Caddyfile"; then exit 1; fi
+
 # A block log is data: avoid headers, raw reasons/URLs and terminal control
 # characters, and never present SNI violations as ordinary host approvals.
 # shellcheck source=lib/control.sh

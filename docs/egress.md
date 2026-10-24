@@ -290,6 +290,20 @@ The unreleased controller uses text on a terminal and JSON when redirected, with
 
 Grants last only for this run, are not single-request approvals, and permit uploads as well as downloads. Revocation affects new tunnels only and cannot override startup wildcard grants. Existing tunnels may continue. `pending` is bounded block-log history, not a request-holding queue. Strict mode remains provider-only.
 
+### D15: Claude Code through the credential gateway
+
+**Decision.**
+Support `strict` for Claude Code through its documented LLM-gateway settings ([connect](https://code.claude.com/docs/en/llm-gateway-connect), [protocol](https://code.claude.com/docs/en/llm-gateway-protocol)). The bootstrap writes `ANTHROPIC_BASE_URL=http://llm-proxy:8080/anthropic` and the placeholder `rapunzel-gateway` into the `env` block of the volume's `settings.json`: in `ANTHROPIC_AUTH_TOKEN` when the host supplies `ANTHROPIC_API_KEY`, in `CLAUDE_CODE_OAUTH_TOKEN` when it supplies only a `claude setup-token` token. The `/anthropic` route then sets `X-Api-Key` from the key, or `Authorization: Bearer` from the token, and removes the other header. Caddy forwards `anthropic-beta` unchanged, which carries the OAuth capability Claude Code adds in OAuth mode.
+
+**Why.**
+The `env` block overrides the process environment, so writing it on every start also overrides entries an agent left there in an earlier session. `ANTHROPIC_AUTH_TOKEN` needs no interactive approval, unlike `ANTHROPIC_API_KEY`. With a placeholder in `CLAUDE_CODE_OAUTH_TOKEN`, Claude Code stays in OAuth mode, so a subscription keeps its plan limits instead of being billed per token. Only a profile that allows `CLAUDE_CODE_OAUTH_TOKEN` can feed the route, so pi never forwards that token.
+
+**Evidence.**
+On 24 October 2026, Claude Code 2.1.309 in strict mode with only a setup token on the host answered `claude -p` through the gateway, while the sandbox held only the placeholder; a strict run has no other route. `verify-egress.sh strict` checks the settings, the placeholder, that neither credential reaches the container, and that a later allowlist run removes the entries; `test-control.sh` checks the rendered route headers. The API-key path has no live check yet.
+
+**Limits.**
+The WebFetch domain preflight and fast mode's availability check call `api.anthropic.com` directly; the bootstrap sets `skipWebFetchPreflight`, and fast mode reports itself unavailable. A `/login` session in the volume (`.credentials.json`) cannot be protected; the bootstrap warns about it. Codex and dsh remain without strict support.
+
 ## Residual risks
 
 Ranked by the security review:

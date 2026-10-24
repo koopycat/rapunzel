@@ -371,10 +371,15 @@ if [[ -n "$base_url_variable" ]] && { ! env_name_is_valid "$base_url_variable" |
     exit 2
 fi
 
+# A subscription token can feed the gateway's Anthropic route only for a
+# profile that takes the variable at all (claude), so pi never forwards it.
+anthropic_oauth_variable=""
+env_name_is_allowed CLAUDE_CODE_OAUTH_TOKEN && anthropic_oauth_variable=CLAUDE_CODE_OAUTH_TOKEN
 # Names the strict gateway reads; they are expected in the env and never reach the harness.
 gateway_consumed=(
     ANTHROPIC_API_KEY OPENAI_API_KEY RAPUNZEL_API_BASE_URL RAPUNZEL_BASE_URL
     RAPUNZEL_API_KEY_VARIABLE "${key_variable:-RAPUNZEL_API_KEY}"
+    ${anthropic_oauth_variable:+"$anthropic_oauth_variable"}
     ${offline_env_names[@]+"${offline_env_names[@]}"}
 )
 name_in_list() {
@@ -489,6 +494,8 @@ if [[ "$EGRESS" != open ]]; then
         )
     else
         GW_ANTHROPIC_KEY=$(runtime_value ANTHROPIC_API_KEY)
+        GW_ANTHROPIC_OAUTH=""
+        [[ -z "$anthropic_oauth_variable" ]] || GW_ANTHROPIC_OAUTH=$(runtime_value "$anthropic_oauth_variable")
         GW_OPENAI_KEY=$(runtime_value OPENAI_API_KEY)
         GW_CUSTOM_URL=$custom_url
         GW_CUSTOM_KEY=$(runtime_value "${key_variable:-RAPUNZEL_API_KEY}")
@@ -499,6 +506,7 @@ if [[ "$EGRESS" != open ]]; then
             --env "RAPUNZEL_GATEWAY_URL=${GATEWAY_URL}"
             --env "RAPUNZEL_GATEWAY_PROVIDERS=${GATEWAY_PROVIDERS}"
         )
+        [[ -z "$GATEWAY_ANTHROPIC_AUTH" ]] || args+=(--env "RAPUNZEL_GATEWAY_ANTHROPIC_AUTH=${GATEWAY_ANTHROPIC_AUTH}")
         if [[ "$GATEWAY_CUSTOM" == true ]]; then
             args+=(
                 --env "RAPUNZEL_API_BASE_URL=${GATEWAY_URL}/custom"
