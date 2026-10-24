@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rapunzel architecture</title>
+<meta name="description" content="A Docker sandbox for coding agents: one project mount, separate agent state, and the network access you choose.">
+<script>
+(() => {
+  let theme = "dark";
+  try {
+    if (localStorage.getItem("md2html-theme") === "light") theme = "light";
+  } catch (_) { /* Storage is optional, including for file:// documents. */ }
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #121821;
+    --surface: #18212d;
+    --raised: #202b3a;
+    --text: #e8edf3;
+    --muted: #a3b0c0;
+    --rule: #314052;
+    --link: #8cbcff;
+    --strand: #e6b85c;
+    --strand-bg: #2e2617;
+    --trusted: #6cd3bd;
+    --trusted-bg: #12302b;
+    --blocked: #ff8f98;
+    --blocked-bg: #33202a;
+    --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --raised: #e8edf3;
+    --text: #18222f;
+    --muted: #556578;
+    --rule: #cdd6e1;
+    --link: #1a55b8;
+    --strand: #94650c;
+    --strand-bg: #fbf0d9;
+    --trusted: #13705d;
+    --trusted-bg: #e0f2ec;
+    --blocked: #b3283c;
+    --blocked-bg: #fce8eb;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    padding: 28px clamp(16px, 4vw, 64px) 96px;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.65 var(--sans);
+    -webkit-text-size-adjust: 100%;
+  }
+  main, .toolbar { max-width: 1120px; margin-inline: auto; }
+  a { color: var(--link); text-underline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--link); outline-offset: 3px; border-radius: 4px; }
+  [hidden] { display: none !important; }
+  code { font: 0.86em var(--mono); background: var(--raised); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+
+  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 56px; }
+  .wordmark { font: 600 20px/1 var(--display); letter-spacing: -0.01em; color: var(--text); text-decoration: none; }
+  .theme-toggle {
+    background: var(--surface); color: var(--text); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 8px 14px; font: 14px/1.4 var(--sans); cursor: pointer;
+  }
+  .theme-toggle:hover { border-color: var(--link); }
+
+  h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(38px, 6.2vw, 72px); line-height: 1.02; letter-spacing: -0.025em; max-width: 15ch; }
+  h2 { font-size: clamp(28px, 3.6vw, 40px); line-height: 1.12; letter-spacing: -0.015em; max-width: 24ch; }
+  h3 { font-size: 21px; line-height: 1.25; }
+  p { margin: 0; }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 32px 64px; align-items: end; }
+  .lede { font-size: 20px; line-height: 1.55; color: var(--muted); max-width: 46ch; }
+  .lede strong { color: var(--text); font-weight: 600; }
+  .tagline { margin-top: 18px; font: italic 18px/1.5 var(--display); color: var(--strand); }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+  .button {
+    display: inline-block; padding: 11px 18px; border-radius: 8px; font-weight: 600; font-size: 15px;
+    text-decoration: none; border: 1px solid var(--rule); color: var(--text); background: var(--surface);
+  }
+  .button.primary { background: var(--strand); border-color: var(--strand); color: var(--bg); }
+  .button:hover { border-color: var(--link); }
+
+  section { margin-top: 104px; scroll-margin-top: 24px; }
+  .section-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 64px; align-items: end; margin-bottom: 32px; }
+  .section-head p { color: var(--muted); max-width: 52ch; }
+
+  /* Mode explorer: the one interactive centrepiece. */
+  .explorer { margin-top: 56px; border: 1px solid var(--rule); border-radius: 18px; background: var(--surface); overflow: hidden; }
+  .modes { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 18px 22px; border-bottom: 1px solid var(--rule); }
+  .modes legend { float: left; font-weight: 600; margin-right: 6px; padding: 0; }
+  .modes fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+  .segmented { display: inline-flex; background: var(--raised); border-radius: 10px; padding: 4px; gap: 4px; }
+  .segmented input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .segmented label { padding: 7px 14px; border-radius: 7px; cursor: pointer; font: 600 14px/1.3 var(--mono); color: var(--muted); }
+  .segmented input:checked + label { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--rule); }
+  .segmented input:focus-visible + label { outline: 2px solid var(--link); outline-offset: 2px; }
+  .modes .hint { color: var(--muted); font-size: 14px; }
+  .diagram { overflow-x: auto; padding: 12px 12px 4px; border-bottom: 1px solid var(--rule); }
+  .diagram svg { display: block; width: 100%; min-width: 680px; height: auto; }
+  .facts { padding: 22px 24px 26px; }
+  .facts dl { margin: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 40px; }
+  .facts dt { font-size: 13px; color: var(--muted); }
+  .facts dd { margin: 2px 0 0; }
+  .facts .verdict { font: 600 22px/1.25 var(--display); }
+  .facts .yes { color: var(--blocked); }
+  .facts .no { color: var(--trusted); }
+
+  .explorer .m { display: none; }
+  .explorer:has(#mode-open:checked) .m.open,
+  .explorer:has(#mode-allow:checked) .m.allow,
+  .explorer:has(#mode-strict:checked) .m.strict { display: revert; }
+  .explorer:has(#mode-open:checked) .facts .m.open,
+  .explorer:has(#mode-allow:checked) .facts .m.allow,
+  .explorer:has(#mode-strict:checked) .facts .m.strict { display: grid; }
+
+  svg .zone { fill: none; stroke: var(--rule); stroke-width: 1.5; }
+  svg .wall { fill: var(--bg); stroke: var(--text); stroke-width: 3; }
+  svg .zone-label { fill: var(--muted); font: 13px var(--sans); }
+  svg .wall-label { fill: var(--text); font: 600 13px var(--sans); }
+  svg .node { fill: var(--raised); stroke: var(--rule); stroke-width: 1.5; }
+  svg .node.agent { fill: var(--strand-bg); stroke: var(--strand); }
+  svg .node.trusted { fill: var(--trusted-bg); stroke: var(--trusted); }
+  svg .node.blocked { fill: var(--blocked-bg); stroke: var(--blocked); stroke-dasharray: 5 4; }
+  svg .t { fill: var(--text); font: 600 14px var(--sans); }
+  svg .s { fill: var(--muted); font: 12px var(--sans); }
+  svg .k { font: 600 11px var(--mono); }
+  svg .chip-real { fill: var(--blocked-bg); stroke: var(--blocked); }
+  svg .chip-real-t { fill: var(--blocked); }
+  svg .chip-safe { fill: var(--trusted-bg); stroke: var(--trusted); }
+  svg .chip-safe-t { fill: var(--trusted); }
+  svg .edge { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+  svg .strand { fill: none; stroke: var(--strand); stroke-width: 3.5; stroke-linecap: round; }
+  svg .refused { fill: none; stroke: var(--blocked); stroke-width: 2; stroke-dasharray: 6 5; }
+  svg .control { fill: none; stroke: var(--trusted); stroke-width: 1.5; stroke-dasharray: 4 4; }
+  svg .edge-label { fill: var(--muted); font: 12px var(--sans); }
+  svg .head { fill: var(--muted); }
+  svg .head-strand { fill: var(--strand); }
+  svg .head-trusted { fill: var(--trusted); }
+  svg .cross { stroke: var(--blocked); stroke-width: 2.5; stroke-linecap: round; }
+  @media (prefers-reduced-motion: no-preference) {
+    svg .strand { stroke-dasharray: 600; animation: draw 0.9s ease-out; }
+    @keyframes draw { from { stroke-dashoffset: 600; } to { stroke-dashoffset: 0; } }
+  }
+
+  /* Guarantees: claims first, mechanism on demand. */
+  .claims { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 48px; border-top: 1px solid var(--rule); }
+  details { border-bottom: 1px solid var(--rule); }
+  summary {
+    list-style: none; cursor: pointer; padding: 18px 36px 18px 0; position: relative;
+    font: 600 19px/1.35 var(--display);
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after {
+    content: "+"; position: absolute; right: 4px; top: 16px; font: 400 22px/1 var(--sans); color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+  details[open] > summary::after { transform: rotate(45deg); }
+  summary .sub { display: block; margin-top: 4px; font: 15px/1.5 var(--sans); color: var(--muted); }
+  .more { padding: 0 0 20px; color: var(--muted); max-width: 62ch; }
+  .more p + p { margin-top: 10px; }
+  .more a { white-space: nowrap; }
+
+  /* Harnesses */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 14px; }
+  table { width: 100%; border-collapse: collapse; min-width: 640px; font-size: 15px; }
+  th, td { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th { background: var(--raised); font-size: 13px; color: var(--muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+  .mode-tag { display: inline-block; font: 12px/1.6 var(--mono); padding: 0 7px; border-radius: 5px; margin: 1px 4px 1px 0; background: var(--raised); color: var(--text); }
+  .mode-tag.off { background: none; color: var(--muted); text-decoration: line-through; }
+  .planned td { color: var(--muted); font-weight: 400; }
+
+  /* Run sequence */
+  .run { counter-reset: step; list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px 40px; }
+  .run li { counter-increment: step; position: relative; padding-top: 34px; border-top: 2px solid var(--rule); }
+  .run li::before { content: counter(step); position: absolute; top: 8px; left: 0; font: 600 14px var(--mono); color: var(--strand); }
+  .run b { display: block; margin-bottom: 4px; }
+  .run span { color: var(--muted); font-size: 15px; }
+
+  /* Limits */
+  .limits { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+  .limits li { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 4px 20px; padding: 16px 0; border-bottom: 1px solid var(--rule); }
+  .limits .sev { font: 600 13px/1.9 var(--mono); }
+  .sev.high { color: var(--blocked); }
+  .sev.medium { color: var(--strand); }
+  .sev.low { color: var(--muted); }
+  .limits b { font-weight: 600; }
+  .limits span { color: var(--muted); }
+
+  /* Proof */
+  .proof { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 48px; border-top: 1px solid var(--rule); }
+  .proof div { padding: 16px 0; border-bottom: 1px solid var(--rule); }
+  .proof code { font-size: 14px; }
+  .proof p { color: var(--muted); font-size: 15px; margin-top: 6px; }
+  .note { margin-top: 20px; color: var(--muted); font-size: 15px; max-width: 74ch; }
+
+  /* Start */
+  pre {
+    margin: 0; padding: 20px 22px; border-radius: 14px; background: var(--surface); border: 1px solid var(--rule);
+    overflow-x: auto; font: 14px/1.7 var(--mono);
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  pre .c { color: var(--muted); }
+  .start { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 32px 48px; align-items: start; }
+  .deeper { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+  .deeper li { border-bottom: 1px solid var(--rule); }
+  .deeper a { display: block; padding: 14px 0; text-decoration: none; font-weight: 600; }
+  .deeper a span { display: block; font-weight: 400; color: var(--muted); font-size: 15px; }
+  .deeper a:hover span { color: var(--text); }
+  footer { margin-top: 88px; padding-top: 20px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 860px) {
+    .hero, .section-head, .start { grid-template-columns: minmax(0, 1fr); }
+    .facts dl { grid-template-columns: minmax(0, 1fr); }
+    .claims, .proof { grid-template-columns: minmax(0, 1fr); }
+    .run { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    section { margin-top: 80px; }
+  }
+  @media (max-width: 560px) {
+    body { font-size: 16px; }
+    .toolbar { margin-bottom: 36px; }
+    .lede { font-size: 18px; }
+    .run { grid-template-columns: minmax(0, 1fr); }
+    .limits li { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media print {
+    :root, :root[data-theme] {
+      color-scheme: light; --bg: #fff; --surface: #fff; --raised: #eef2f6; --text: #111; --muted: #444;
+      --rule: #ccc; --link: #1a55b8; --strand: #8a5d08; --strand-bg: #fbf0d9; --trusted: #13705d;
+      --trusted-bg: #e0f2ec; --blocked: #b3283c; --blocked-bg: #fce8eb;
+    }
+    body { padding: 0; }
+    .theme-toggle, .actions { display: none; }
+    details > *:not(summary) { display: block; }
+    .diagram svg { min-width: 0; }
+    section { break-inside: avoid-page; }
+  }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <a class="wordmark" href="#top">rapunzel</a>
+  <button class="theme-toggle" id="theme-toggle" type="button" hidden>Light mode</button>
+</div>
+<main id="top">
+
+<header class="hero">
+  <div>
+    <h1>Give the coding agent one project and nothing else.</h1>
+  </div>
+  <div>
+    <p class="lede">rapunzel runs <strong>pi, Claude Code, Codex, dsh, and opencode</strong> in a hardened Docker container. The agent gets the project it works on, its own state, and the network access you choose. Your home directory, SSH keys, and other projects stay outside.</p>
+    <p class="tagline">Rapunzel’s tower has one way out, and you hold the strand.</p>
+    <div class="actions">
+      <a class="button primary" href="#start">Start in a minute</a>
+      <a class="button" href="architecture.md">Read the full architecture</a>
+    </div>
+  </div>
+</header>
+
+<div class="explorer" id="modes">
+  <div class="modes">
+    <fieldset>
+      <legend>Network mode</legend>
+      <span class="segmented">
+        <input type="radio" name="mode" id="mode-open" value="open">
+        <label for="mode-open">open</label>
+        <input type="radio" name="mode" id="mode-allow" value="allowlist" checked>
+        <label for="mode-allow">allowlist</label>
+        <input type="radio" name="mode" id="mode-strict" value="strict">
+        <label for="mode-strict">strict</label>
+      </span>
+    </fieldset>
+    <span class="hint">Pick a mode to see what the agent can reach and where your API key lives.</span>
+  </div>
+  <div class="explorer-body">
+    <div class="diagram" tabindex="0" role="region" aria-label="Sandbox diagram for the selected network mode; scrolls sideways on narrow screens">
+      <svg viewBox="0 0 1000 380" role="img" aria-labelledby="dia-title dia-desc">
+        <title id="dia-title">What crosses the sandbox wall</title>
+        <desc id="dia-desc">The rapunzel launcher on your machine starts the coding agent in a container. Only the project is mounted, read-write at /workspace, and the agent's state lives in its own volume. Your home directory, SSH keys, and other projects are never mounted. In open mode the agent reaches any host and holds your API key. In allowlist mode it reaches only allowed hosts through the Pipelock proxy, still holds the key, and rapunzel-ctl can grant a host for the current run. In strict mode it reaches only provider APIs through the Caddy gateway, which holds the real key, while the agent has a placeholder.</desc>
+        <defs>
+          <marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 L10 5 L0 10 Z"/></marker>
+          <marker id="hs" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path class="head-strand" d="M0 0 L10 5 L0 10 Z"/></marker>
+          <marker id="ht" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-trusted" d="M0 0 L10 5 L0 10 Z"/></marker>
+        </defs>
+
+        <rect class="zone" x="12" y="16" width="224" height="330" rx="14"/>
+        <text class="zone-label" x="30" y="42">Your machine</text>
+        <rect class="node trusted" x="28" y="58" width="196" height="54" rx="10"/>
+        <text class="t" x="126" y="82" text-anchor="middle">rapunzel</text>
+        <text class="s" x="126" y="100" text-anchor="middle">launcher, enforces the rules</text>
+        <rect class="node" x="28" y="130" width="196" height="54" rx="10"/>
+        <text class="t" x="126" y="154" text-anchor="middle">this project</text>
+        <text class="s" x="126" y="172" text-anchor="middle">git config and hooks read-only</text>
+        <rect class="node blocked" x="28" y="202" width="196" height="54" rx="10"/>
+        <text class="t" x="126" y="226" text-anchor="middle">the rest of your machine</text>
+        <text class="s" x="126" y="244" text-anchor="middle">home, ~/.ssh, other projects</text>
+        <g class="m allow">
+          <rect class="node trusted" x="28" y="274" width="196" height="54" rx="10"/>
+          <text class="t" x="126" y="298" text-anchor="middle">rapunzel-ctl</text>
+          <text class="s" x="126" y="316" text-anchor="middle">you approve hosts mid-run</text>
+        </g>
+
+        <rect class="wall" x="300" y="16" width="260" height="330" rx="6"/>
+        <text class="wall-label" x="318" y="42">Sandbox container</text>
+        <rect class="node agent" x="320" y="96" width="220" height="104" rx="10"/>
+        <text class="t" x="430" y="122" text-anchor="middle">coding agent</text>
+        <text class="s" x="430" y="140" text-anchor="middle">your UID, no root, no capabilities</text>
+        <g class="m open allow">
+          <rect class="chip-real" x="370" y="156" width="120" height="26" rx="13"/>
+          <text class="k chip-real-t" x="430" y="173" text-anchor="middle">real API key</text>
+        </g>
+        <g class="m strict">
+          <rect class="chip-safe" x="365" y="156" width="130" height="26" rx="13"/>
+          <text class="k chip-safe-t" x="430" y="173" text-anchor="middle">placeholder key</text>
+        </g>
+        <rect class="node" x="320" y="252" width="220" height="60" rx="10"/>
+        <text class="t" x="430" y="278" text-anchor="middle">state volume</text>
+        <text class="s" x="430" y="296" text-anchor="middle">per project and harness</text>
+
+        <path class="edge" d="M224 85 L318 126" marker-end="url(#h)"/>
+        <text class="edge-label" x="268" y="96" text-anchor="middle">starts</text>
+        <path class="edge" d="M224 157 L318 160" marker-end="url(#h)"/>
+        <text class="edge-label" x="268" y="149" text-anchor="middle">/workspace</text>
+        <path class="edge" d="M430 251 L430 202" marker-end="url(#h)"/>
+
+        <g class="m open">
+          <path class="strand" d="M540 130 C 680 130, 720 96, 834 96" marker-end="url(#hs)"/>
+          <text class="edge-label" x="690" y="136" text-anchor="middle">Docker bridge</text>
+          <rect class="node" x="838" y="68" width="150" height="56" rx="28"/>
+          <text class="t" x="913" y="93" text-anchor="middle">any host</text>
+          <text class="s" x="913" y="110" text-anchor="middle">the whole internet</text>
+        </g>
+
+        <g class="m allow strict">
+          <path class="strand" d="M540 148 L636 148" marker-end="url(#hs)"/>
+          <text class="edge-label" x="590" y="124" text-anchor="middle">internal</text>
+          <text class="edge-label" x="590" y="138" text-anchor="middle">network</text>
+          <path class="strand" d="M800 130 C 816 112, 820 96, 834 96" marker-end="url(#hs)"/>
+          <path class="refused" d="M800 172 C 816 196, 820 236, 836 236"/>
+          <path class="cross" d="M806 196 l12 12 M818 196 l-12 12"/>
+          <rect class="node blocked" x="838" y="208" width="150" height="56" rx="28"/>
+          <text class="t" x="913" y="233" text-anchor="middle">everything else</text>
+          <text class="s" x="913" y="250" text-anchor="middle">no route, no DNS</text>
+        </g>
+        <g class="m allow">
+          <rect class="node trusted" x="640" y="104" width="160" height="88" rx="10"/>
+          <text class="t" x="720" y="134" text-anchor="middle">Pipelock proxy</text>
+          <text class="s" x="720" y="153" text-anchor="middle">checks host name</text>
+          <text class="s" x="720" y="170" text-anchor="middle">and TLS server name</text>
+          <rect class="node" x="838" y="68" width="150" height="56" rx="28"/>
+          <text class="t" x="913" y="93" text-anchor="middle">allowed hosts</text>
+          <text class="s" x="913" y="110" text-anchor="middle">named on the host</text>
+          <path class="control" d="M224 301 L268 301 Q 276 301 276 309 L276 356 Q 276 364 284 364 L712 364 Q 720 364 720 356 L720 194" marker-end="url(#ht)"/>
+          <text class="edge-label" x="732" y="292">grant or revoke</text>
+          <text class="edge-label" x="732" y="307">a host for this run</text>
+        </g>
+        <g class="m strict">
+          <rect class="node trusted" x="640" y="104" width="160" height="88" rx="10"/>
+          <text class="t" x="720" y="130" text-anchor="middle">Caddy gateway</text>
+          <text class="s" x="720" y="148" text-anchor="middle">fixed routes only</text>
+          <rect class="chip-real" x="660" y="157" width="120" height="24" rx="12"/>
+          <text class="k chip-real-t" x="720" y="173" text-anchor="middle">real API key</text>
+          <rect class="node" x="838" y="68" width="150" height="56" rx="28"/>
+          <text class="t" x="913" y="93" text-anchor="middle">provider APIs</text>
+          <text class="s" x="913" y="110" text-anchor="middle">fixed upstreams</text>
+        </g>
+      </svg>
+    </div>
+    <div class="facts" aria-live="polite">
+      <dl class="m open">
+        <div><dt>Agent holds your API key</dt><dd class="verdict yes">Yes</dd></div>
+        <div><dt>Agent can reach</dt><dd>Any host, through Docker’s default bridge.</dd></div>
+        <div><dt>Pick it when</dt><dd>You trust the task and want no setup. The filesystem, privilege, and environment limits still apply.</dd></div>
+      </dl>
+      <dl class="m allow">
+        <div><dt>Agent holds your API key</dt><dd class="verdict yes">Yes</dd></div>
+        <div><dt>Agent can reach</dt><dd>Only hosts you named on the host, over HTTPS with a matching TLS server name. Private addresses stay blocked.</dd></div>
+        <div><dt>Pick it when</dt><dd>The agent reads code or docs you didn’t write. Approve a missing host while it runs with <code>rapunzel-ctl egress allow</code>.</dd></div>
+      </dl>
+      <dl class="m strict">
+        <div><dt>Agent holds your API key</dt><dd class="verdict no">No, only a placeholder</dd></div>
+        <div><dt>Agent can reach</dt><dd>Fixed provider routes on the gateway. Everything else gets a 403 or has no route.</dd></div>
+        <div><dt>Pick it when</dt><dd>The key must not leak. Works with pi and opencode and API keys, not subscription logins.</dd></div>
+      </dl>
+    </div>
+  </div>
+</div>
+
+<section id="guarantees" aria-labelledby="guarantees-heading">
+  <div class="section-head">
+    <h2 id="guarantees-heading">Docker enforces the boundary, not the agent.</h2>
+    <p>rapunzel doesn’t rely on the agent’s own permission prompts or sandbox. The launcher, Docker, and the sidecar enforce every rule, whichever harness runs inside. Open any claim to see how it works.</p>
+  </div>
+  <div class="claims">
+    <details>
+      <summary>It sees one directory.<span class="sub">The project, mounted read-write at <code>/workspace</code>. Nothing else from your machine.</span></summary>
+      <div class="more">
+        <p>The only host bind mount is the project. Your home directory, <code>~/.ssh</code>, the harnesses’ own host folders such as <code>~/.pi</code> or <code>~/.claude</code>, and the Docker socket are never mounted. No ports are published, except dsh’s web UI on <code>127.0.0.1</code> in open mode.</p>
+        <p><a href="architecture.md#41-process-and-filesystem-isolation">Architecture 4.1</a></p>
+      </div>
+    </details>
+    <details>
+      <summary>It runs without root.<span class="sub">Your own user ID, every Linux capability dropped.</span></summary>
+      <div class="more">
+        <p>The container starts with <code>--user</code> set to your UID and GID, <code>--cap-drop=ALL</code>, and <code>no-new-privileges</code>, so setuid binaries can’t raise it. libnss-wrapper names the UID <code>agent</code> without root, and files it creates in the project belong to you.</p>
+        <p><a href="architecture.md#42-identity-without-root">Architecture 4.2</a></p>
+      </div>
+    </details>
+    <details>
+      <summary>It gets only the variables you allow.<span class="sub">No inherited host environment, no injected loader hooks.</span></summary>
+      <div class="more">
+        <p>Only allowlisted names enter: known provider keys, proxy settings, and the profile’s own names. A denylist (<code>LD_PRELOAD</code>, <code>NODE_OPTIONS</code>, <code>BASH_ENV</code>, <code>PATH</code>, …) beats everything, and env files go through the same filter. Secrets arrive at runtime, never in the image.</p>
+        <p><a href="architecture.md#44-environment-and-credentials">Architecture 4.4</a></p>
+      </div>
+    </details>
+    <details>
+      <summary>The network fails closed.<span class="sub">In the restricted modes, ignoring the proxy leads nowhere.</span></summary>
+      <div class="more">
+        <p>The agent sits alone on a per-run Docker <code>--internal</code> network in isolated gateway mode: no route out, no external DNS, no host address. Its one peer is the sidecar, which reaches the internet through its own per-run bridge, never Docker’s default one. This needs Docker Engine 28 or newer.</p>
+        <p><a href="architecture.md#45-network-egress">Architecture 4.5</a> · <a href="egress.md">Egress decisions</a></p>
+      </div>
+    </details>
+    <details>
+      <summary>Allowed means exactly that host.<span class="sub">The TLS handshake has to name the host you allowed.</span></summary>
+      <div class="more">
+        <p>Pipelock checks each tunnel’s host against the allowlist, requires the TLS server name to match it, resolves the name itself, and refuses private, loopback, and metadata addresses. Without the TLS check, an allowed host on a shared CDN would open every other site on it; Squid and Smokescreen failed exactly that test. The allowlist comes only from your host settings, never from files the agent can write.</p>
+        <p><a href="egress.md#d4-pipelock-as-the-allowlist-proxy">Decision D4</a></p>
+      </div>
+    </details>
+    <details>
+      <summary>Your key can stay out of reach.<span class="sub">In strict mode only the gateway holds it.</span></summary>
+      <div class="more">
+        <p>Caddy forwards only <code>/anthropic</code>, <code>/openai</code>, and <code>/custom</code> to fixed upstreams and always overwrites the auth header with the real key. Overwriting matters: the agent can’t use an allowed provider with an attacker’s key to smuggle data out.</p>
+        <p><a href="egress.md#d6-caddy-for-strict-mode">Decision D6</a></p>
+      </div>
+    </details>
+    <details>
+      <summary>Your host’s git can’t be turned against you.<span class="sub">Hooks and git config are read-only; other risky files are reported.</span></summary>
+      <div class="more">
+        <p>The agent can still commit, branch, and stash, but it can’t add a hook, set <code>core.fsmonitor</code>, or move <code>core.hooksPath</code>. Files host tools run on their own, such as <code>.envrc</code>, editor tasks, or package scripts, are hashed before the run and every change is listed when it ends.</p>
+        <p><a href="architecture.md#46-files-the-host-runs">Architecture 4.6</a></p>
+      </div>
+    </details>
+    <details>
+      <summary>Each project keeps its own state.<span class="sub">Logins, sessions, and extensions never mix between projects.</span></summary>
+      <div class="more">
+        <p>Each project and harness gets a named volume, <code>rapunzel-&lt;harness&gt;-&lt;hash&gt;</code>. You log in once per project, not per run, and a poisoned extension in one project can’t follow you into another. Env-file credentials are passed fresh each run and never written to the volume.</p>
+        <p><a href="architecture.md#43-agent-state-and-configuration">Architecture 4.3</a></p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<section id="harnesses" aria-labelledby="harnesses-heading">
+  <div class="section-head">
+    <h2 id="harnesses-heading">Bring the agent you already use.</h2>
+    <p>Every harness runs behind the same launcher with the same controls. Each gets its own image and a shortcut such as <code>rapunzel-claude</code>.</p>
+  </div>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="Supported harnesses">
+    <table>
+      <thead><tr><th scope="col">Harness</th><th scope="col">Network modes</th><th scope="col">Sign in with</th><th scope="col">Start it</th></tr></thead>
+      <tbody>
+        <tr><td>pi</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag">strict</span></td><td>Provider keys, a custom endpoint, or <code>/login</code></td><td><code>rapunzel</code></td></tr>
+        <tr><td>Claude Code</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag off">strict</span></td><td><code>ANTHROPIC_API_KEY</code> or a subscription token from <code>claude setup-token</code></td><td><code>rapunzel-claude</code></td></tr>
+        <tr><td>Codex CLI</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag off">strict</span></td><td><code>OPENAI_API_KEY</code> or a ChatGPT device login</td><td><code>rapunzel-codex</code></td></tr>
+        <tr><td>DeepSeek Harness</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span> headless only<span class="mode-tag off">strict</span></td><td><code>DEEPSEEK_API_KEY</code>; web UI on <code>127.0.0.1</code></td><td><code>rapunzel-dsh</code></td></tr>
+        <tr><td>opencode</td><td><span class="mode-tag">open</span><span class="mode-tag">allowlist</span><span class="mode-tag">strict</span></td><td>Provider keys, a custom endpoint, Zen, or <code>opencode auth login</code></td><td><code>rapunzel-opencode</code></td></tr>
+        <tr class="planned"><td>Copilot CLI</td><td colspan="3">Planned. It needs <code>api.github.com</code>, which exposes GitHub’s whole API, so it will be opt-in.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="run" aria-labelledby="run-heading">
+  <div class="section-head">
+    <h2 id="run-heading">One command, start to finish.</h2>
+    <p>Everything below happens on every <code>rapunzel</code> run, before the agent gets its first token and after it exits.</p>
+  </div>
+  <ol class="run">
+    <li><b>Pick the profile and project</b><span>From <code>--harness</code> or the shortcut name. It refuses to run as root.</span></li>
+    <li><b>Load your env file</b><span><code>~/.config/rapunzel/&lt;harness&gt;.env</code> if it exists, filtered by the allowlist.</span></li>
+    <li><b>Check Docker</b><span>Explains how to start an engine, and builds a missing harness image.</span></li>
+    <li><b>Prepare the state volume</b><span>Hands it to your UID and registers the run under a run ID.</span></li>
+    <li><b>Set up the network</b><span>In a restricted mode: two fresh networks and a healthy sidecar.</span></li>
+    <li><b>Snapshot risky files</b><span>Hashes <code>.envrc</code>, editor tasks, hooks, manifests, and more.</span></li>
+    <li><b>Run the agent</b><span>Maps the identity, writes the harness config, starts the harness.</span></li>
+    <li><b>Clean up</b><span>Removes the sidecar, networks, and run record, and resets the terminal.</span></li>
+    <li><b>Report changes</b><span>Lists every risky file the agent added, changed, or removed.</span></li>
+  </ol>
+</section>
+
+<section id="limits" aria-labelledby="limits-heading">
+  <div class="section-head">
+    <h2 id="limits-heading">What it doesn’t protect you from.</h2>
+    <p>A sandbox you can trust is clear about its edges. These are the residual risks, most serious first.</p>
+  </div>
+  <ol class="limits">
+    <li><span class="sev high">high</span><div><b>Risky files outside git.</b> <span>Changes to <code>.envrc</code>, editor tasks, or package scripts are reported, not blocked. Read the report before you run those tools.</span></div></li>
+    <li><span class="sev high">high</span><div><b>Data sent to allowed hosts.</b> <span>The agent can send anything it reads to the hosts it may reach. Every allowed host, including a runtime grant, widens that channel.</span></div></li>
+    <li><span class="sev medium">medium</span><div><b>Encrypted Client Hello.</b> <span>With ECH, the outer TLS name could name an allowed host while the inner one names another site on the same CDN. Not yet verified.</span></div></li>
+    <li><span class="sev medium">medium</span><div><b>Agent-volume tampering.</b> <span>Extensions, settings, and trust decisions persist and run again next session, within that project.</span></div></li>
+    <li><span class="sev medium">medium</span><div><b>Sidecar compromise.</b> <span>A compromised sidecar has full egress, limited to the internet by its own per-run network.</span></div></li>
+    <li><span class="sev medium">medium</span><div><b>Unpinned transitive dependencies.</b> <span>pi ships no shrinkwrap, so its dependencies resolve when the image is built.</span></div></li>
+    <li><span class="sev low">low</span><div><b>Kernel or runtime escape.</b> <span>Unlikely but serious: on Linux it reaches the host; on Docker Desktop and Colima, the VM.</span></div></li>
+  </ol>
+  <p class="note">Docker Desktop on macOS has shut down twice after the read-only git sub-mounts; Colima and Linux are fine. WSL2 is untested. <a href="architecture.md#8-limitations-and-future-work">Limitations and future work</a></p>
+</section>
+
+<section id="proof" aria-labelledby="proof-heading">
+  <div class="section-head">
+    <h2 id="proof-heading">Every claim has a test.</h2>
+    <p>The checks act as a hostile agent through the real launcher, so they test the configuration you actually run. CI runs them on every change, and images are published only after they pass.</p>
+  </div>
+  <div class="proof">
+    <div><code>verify-isolation.sh</code><p>Not root; only <code>/workspace</code> and the volume are writable; no host home, <code>~/.ssh</code>, or <code>~/.pi</code> in the mount table.</p></div>
+    <div><code>verify-host-files.sh</code><p>Writing hooks and git config fails, a commit still works, and planted <code>.envrc</code> and editor tasks are reported.</p></div>
+    <div><code>verify-egress.sh</code><p>No DNS, direct IP, metadata, or host access; wrong or missing TLS names, IP literals, and plain HTTP are refused; the real key never reaches the agent in strict mode.</p></div>
+    <div><code>verify-control.sh</code><p>Runtime grants and revokes take effect, TLS checks survive a policy change, and a lost acknowledgement stops egress instead of reporting success.</p></div>
+    <div><code>test.sh</code><p>Each harness starts offline through the real entrypoint, with the right identity and no key written to the volume.</p></div>
+    <div><code>test-control.sh</code><p>Host-only checks of the run registry, grant validation, and safe output, without Docker.</p></div>
+  </div>
+  <p class="note">Tested on Docker Engine 28 (Ubuntu, CI), Colima with Docker Engine 29 (macOS), and Docker Desktop 29 (macOS).</p>
+</section>
+
+<section id="start" aria-labelledby="start-heading">
+  <div class="section-head">
+    <h2 id="start-heading">Start in a minute.</h2>
+    <p>You need Docker and <code>jq</code> on the host. The image is published for amd64 and arm64.</p>
+  </div>
+  <div class="start">
+<pre><code><span class="c"># once: put the checkout on PATH and use the published image</span>
+export PATH="$HOME/src/rapunzel:$PATH"
+export RAPUNZEL_IMAGE=ghcr.io/koopycat/rapunzel
+
+<span class="c"># run pi on the current project</span>
+cd ~/src/my-project
+rapunzel
+
+<span class="c"># or Claude Code, limited to allowed hosts</span>
+RAPUNZEL_EGRESS=allowlist rapunzel-claude
+
+<span class="c"># approve a blocked host from a second terminal</span>
+rapunzel-ctl egress pending RUN_ID
+rapunzel-ctl egress allow RUN_ID registry.npmjs.org</code></pre>
+    <ul class="deeper" aria-label="Further reading">
+      <li><a href="architecture.md">Full architecture<span>Threat model, design, verification, decisions, and limits.</span></a></li>
+      <li><a href="egress.md">Egress decisions<span>Why Pipelock and Caddy, rejected alternatives, and attack evidence.</span></a></li>
+      <li><a href="guide.md">User guide<span>Providers, logins, extensions, configuration, and troubleshooting.</span></a></li>
+      <li><a href="concepts.html">Visual concept guide<span>The boundary, network modes, and a run, drawn out.</span></a></li>
+      <li><a href="../openspec/specs/">Specifications<span>Requirements and scenarios for every capability.</span></a></li>
+    </ul>
+  </div>
+</section>
+
+<footer>A snapshot of this checkout on 24 October 2026, written from <a href="architecture.md">architecture.md</a>. Self-contained: no external fonts, scripts, or network requests.</footer>
+</main>
+<script>
+(() => {
+  const button = document.getElementById("theme-toggle");
+  const root = document.documentElement;
+  const updateLabel = () => {
+    button.textContent = root.dataset.theme === "light" ? "Dark mode" : "Light mode";
+  };
+  button.addEventListener("click", () => {
+    root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+    updateLabel();
+    try {
+      localStorage.setItem("md2html-theme", root.dataset.theme);
+    } catch (_) { /* Switching still works when persistence is unavailable. */ }
+  });
+  updateLabel();
+  button.hidden = false;
+})();
+</script>
+</body>
+</html>

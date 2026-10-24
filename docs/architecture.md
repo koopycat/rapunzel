@@ -4,22 +4,23 @@
 
 rapunzel runs coding-agent harnesses inside a Docker container that treats the agent as untrusted.
 A harness is the command-line agent that drives a model and acts on a project, such as pi or Claude Code.
-The pi coding agent is the first supported harness; Claude Code, Codex CLI, and Copilot CLI are planned as further profiles.
-The agent sees one host directory, the project it works on, and keeps its own settings, logins, and sessions in a separate Docker volume per project.
+The pi coding agent is the default harness; Claude Code, Codex CLI, DeepSeek Harness (dsh), and opencode are further profiles, and Copilot CLI is planned.
+The agent sees one host directory, the project it works on, and keeps its own settings, logins, and sessions in a separate Docker volume per project and harness.
 It runs as the caller's user without root privileges or Linux capabilities, and receives only an allowlist of environment variables.
-Two optional egress modes restrict the network: `allowlist` lets the agent reach only named hosts through an SNI-checking HTTPS proxy, and `strict` additionally keeps provider API keys out of the container by placing them in a credential gateway.
+Two optional egress modes restrict the network: `allowlist` lets the agent reach only named hosts through an SNI-checking HTTPS proxy, and `strict` (pi and opencode) additionally keeps provider API keys out of the container by placing them in a credential gateway.
+In `allowlist` mode, a host-side controller can grant or revoke single hosts while a run is live.
 Because an agent can also attack the host indirectly, by writing files that the host later runs, git hooks and git configuration are mounted read-only and changes to other host-executed files are reported after each run.
 Every one of these properties is checked by scripts that act as a hostile agent through the real launcher; they run in CI before any image is published.
 
 ## Key points
 
 1. **The boundary is outside the agent.** rapunzel does not rely on the agent's own permission prompts or sandbox. Docker, the launcher, and sidecar containers enforce every control, whichever harness runs inside.
-2. **One host directory, nothing else.** The project is mounted at `/workspace`. The host home directory, `~/.pi`, `~/.ssh`, and the Docker socket are never mounted. Agent state lives in a per-project named volume.
+2. **One host directory, nothing else.** The project is mounted at `/workspace`. The host home directory, the harnesses' host directories such as `~/.pi` or `~/.claude`, `~/.ssh`, and the Docker socket are never mounted. Agent state lives in a named volume per project and harness.
 3. **No privileges.** The agent runs as the caller's numeric UID and GID, with all capabilities dropped and `no-new-privileges` set.
-4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts. `strict` gives only fixed provider routes and no real API key.
+4. **Network access is a choice.** `open` (default) gives normal internet access. `allowlist` gives only named HTTPS hosts, which the operator can extend per run from the host. `strict` (pi and opencode) gives only fixed provider routes and no real API key.
 5. **The network boundary fails closed.** In both restricted modes the agent sits on a Docker `--internal` network with no route, no external DNS, and no host address. Anything that ignores the proxy has nowhere to go.
 6. **The host is protected from planted files.** Git hooks and git configuration are read-only inside the container, so the agent cannot make the host's git run its code. Other host-executed files are reported, not blocked.
-7. **Claims are tested, not assumed.** `verify-isolation.sh`, `verify-host-files.sh`, and `verify-egress.sh` probe the boundary from inside the container. CI runs them on every change and before every image release.
+7. **Claims are tested, not assumed.** `verify-isolation.sh`, `verify-host-files.sh`, `verify-egress.sh`, and `verify-control.sh` probe the boundary through the real launcher. CI runs them on every change and before every image release.
 
 ## 1 Problem and goals
 
@@ -64,55 +65,63 @@ flowchart LR
   subgraph host["Host"]
     user["rapunzel<br/>(launcher)"]
     project[("project directory")]
+    ctl["rapunzel-ctl<br/>(controller)"]
   end
   subgraph docker["Docker engine"]
-    agent["agent container<br/>harness (pi), caller's UID, no capabilities"]
-    volume[("per-project volume<br/>settings, logins, sessions")]
+    agent["agent container<br/>harness, caller's UID, no capabilities"]
+    volume[("per-project, per-harness volume<br/>settings, logins, sessions")]
     sidecar["egress sidecar<br/>Pipelock or Caddy"]
   end
   user -->|starts| agent
   project -->|"bind mount /workspace<br/>(.git/config, hooks read-only)"| agent
-  volume -->|"/home/agent/.pi/agent"| agent
+  volume -->|"profile state directory<br/>(pi: /home/agent/.pi/agent)"| agent
   agent -->|"internal network<br/>(restricted modes only)"| sidecar
+  ctl -->|"validated grants<br/>(allowlist mode only)"| sidecar
   sidecar -->|"per-run outbound network"| internet["allowed hosts"]
 ```
 
 | Component | Role | Source |
 |---|---|---|
-| `rapunzel` | Launcher on the host. Builds the `docker run` command, filters the environment, sets up egress, reports host-file changes, resets the terminal. | `rapunzel`, `lib/*.sh` |
-| Image | Shared Debian slim base with Node 24, bash, CA certificates, git, curl, ripgrep, jq, less, zip, unzip, and procps, plus the selected harness. The pi image is built from this repository and published to `ghcr.io/koopycat/rapunzel`. | `Dockerfile` |
-| Entrypoint | Maps the caller's UID to the name `agent`, writes pi's configuration, then runs the requested command. | `bootstrap.sh`, `setup-identity.sh`, `profiles/<harness>/bootstrap.mjs` |
-| Agent volume | Docker named volume per project, mounted at `/home/agent/.pi/agent`. | `lib/volumes.sh` |
+| `rapunzel` | Launcher on the host. Selects the harness profile, builds the `docker run` command, filters the environment, sets up egress, registers the run, reports host-file changes, resets the terminal. The links `rapunzel-claude`, `rapunzel-codex`, `rapunzel-dsh`, and `rapunzel-opencode` select their profile by name. | `rapunzel`, `lib/*.sh` |
+| Harness profile | Data only: command, image, state directory, environment names, egress hosts, and whether `strict` is supported. It never weakens a launcher control. | `profiles/<harness>/profile.sh`, `lib/profile.sh` |
+| Image | Shared Debian slim base with Node 24, bash, CA certificates, git, curl, ripgrep, jq, less, zip, unzip, procps, and libnss-wrapper, plus one final stage per harness. The pi image is built from this repository and published to `ghcr.io/koopycat/rapunzel`; the others are built locally with `--target <harness>`. | `Dockerfile` |
+| Entrypoint | Maps the caller's UID to the name `agent`, runs the profile's bootstrap to write the harness's configuration, then runs the requested command. | `bootstrap.sh`, `setup-identity.sh`, `profiles/<harness>/bootstrap.mjs` |
+| Agent volume | Docker named volume per project and harness, mounted at the profile's state directory (pi: `/home/agent/.pi/agent`). | `lib/volumes.sh` |
 | Egress sidecar | Pipelock (allowlist mode) or Caddy (strict mode), created per run. | `lib/egress.sh` |
+| `rapunzel-ctl` | Host-side controller: lists live runs, shows their redacted policy and blocked events, and grants or revokes hosts in `allowlist` mode. | `rapunzel-ctl`, `lib/control.*`, `lib/runs.sh` |
 | `rapunzel-ext` | Copies curated extensions from the host into a project's volume. | `rapunzel-ext` |
-| Check scripts | Probe the boundary from inside the container. | `test.sh`, `verify-*.sh` |
+| Check scripts | Probe the boundary through the real launcher. | `test.sh`, `test-control.sh`, `verify-*.sh` |
 
 **One run, step by step:**
 
-1. `rapunzel` resolves the project directory (default: the current directory) and refuses to run as root.
-2. It checks that the Docker engine is reachable and explains how to start one if not.
-3. It prepares the volume's ownership for the caller's UID in a short-lived, networkless container.
-4. It filters the environment and the optional env file through an allowlist.
-5. In a restricted egress mode it creates two networks and the sidecar, and waits until the sidecar is healthy.
-6. It records hashes of host-executed files in the project.
-7. It runs the agent container. The entrypoint sets up the identity and pi's configuration, then starts the harness, pi.
-8. When the harness exits, it reports changed host-executed files, removes the sidecar and networks, and resets terminal modes the harness may have left on.
+1. `rapunzel` selects the harness profile (`--harness`, the link name, or `RAPUNZEL_HARNESS`; default pi), resolves the project directory (default: the current directory), and refuses to run as root.
+2. Without `RAPUNZEL_ENV_FILE`, it uses `~/.config/rapunzel/<harness>.env` when that file exists.
+3. It checks that the Docker engine is reachable and explains how to start one if not. A missing harness image is built from the checkout's `Dockerfile`.
+4. It prepares the volume's ownership for the caller's UID in a short-lived, networkless container, and registers the run under a new run ID in the caller-owned host directory `~/.local/state/rapunzel/runs`.
+5. It filters the environment and the env file through an allowlist.
+6. In a restricted egress mode it creates two networks and the sidecar, and waits until the sidecar is healthy.
+7. It records hashes of host-executed files in the project.
+8. It runs the agent container. The entrypoint sets up the identity, runs the profile's bootstrap, then starts the harness, or a shell with `--shell` or a command with `--exec`.
+9. When the container exits, it removes the sidecar, networks, and run record, resets terminal modes the harness may have left on, and reports changed host-executed files.
 
 ## 4 Design
 
 ### 4.1 Process and filesystem isolation
 
 The agent container starts with `--user <caller UID>:<caller GID>`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, and `--init`.
-It has exactly two intentional mounts:
+It has exactly two intentional mounts, plus the read-only git sub-mounts of section 4.6:
 
 ```text
-PROJECT_DIR (read-write)   -> /workspace
-per-project named volume   -> /home/agent/.pi/agent
+PROJECT_DIR (read-write)               -> /workspace
+per-project, per-harness named volume  -> profile state directory (pi: /home/agent/.pi/agent)
 ```
 
 The project mount uses the caller's own UID, so files the agent creates belong to the user on the host.
 Nothing else from the host is mounted.
-In particular the host `~/.pi` stays out: it holds credentials, trust decisions, extensions that run code, and full session history from every project.
+In particular the harnesses' host directories, such as `~/.pi`, `~/.claude`, and `~/.codex`, stay out: they hold credentials, trust decisions, extensions that run code, and full session history from every project.
+
+The launcher publishes no ports.
+The one exception is a profile with a web UI (dsh) started with its default arguments in `open` mode: one port, bound to the host's `127.0.0.1` only, with the harness's own authentication left on.
 
 ### 4.2 Identity without root
 
@@ -128,22 +137,27 @@ The image also marks `/workspace` as a safe git directory, because Docker Deskto
 ### 4.3 Agent state and configuration
 
 Each project gets its own volume, named `rapunzel-<harness>-` plus the first 12 hex digits of the SHA-256 of its canonical path.
-Settings, `/login` credentials, sessions, trust decisions, and installed extensions therefore never mix between projects.
+Settings, logins made inside the sandbox, sessions, trust decisions, and installed extensions therefore never mix between projects or harnesses.
+`RAPUNZEL_VOLUME` opts into a shared volume deliberately.
 
 A new volume is owned by root.
 Before every run, a short root container with only `CHOWN` and `DAC_OVERRIDE`, and no network, hands it to the caller's UID.
 A marker file records the owner, so later runs only read it.
 
-The entrypoint rewrites pi's `models.json` and `settings.json` on every start.
-It registers a custom provider from `RAPUNZEL_*` variables, points built-in providers at the credential gateway in strict mode, and removes those overrides again in other modes.
-Because these entries are rewritten each time, an edit the agent makes to them does not persist.
+The entrypoint runs the profile's bootstrap on every start.
+pi's rewrites `models.json` and `settings.json`: it registers a custom provider from `RAPUNZEL_*` variables, points built-in providers at the credential gateway in strict mode, and removes those overrides again in other modes.
+opencode's builds the same custom provider in a rapunzel-owned config file and never edits the user's `opencode.json`.
+Claude Code's skips the login picker when a credential is set, and Codex's defaults `sandbox_mode` to `danger-full-access` because Codex's own bubblewrap sandbox cannot run in the container; values the user sets win.
+Because the managed entries are rewritten each time, an edit the agent makes to them does not persist.
 
 ### 4.4 Environment and credentials
 
 The container never inherits the host environment.
-`rapunzel` forwards only names on an allowlist: known provider keys, `RAPUNZEL_*` provider settings, proxy variables, and a few pi switches.
-A denylist (`LD_PRELOAD`, `NODE_OPTIONS`, `BASH_ENV`, `PATH`, `HOME`, and similar) wins over everything, so neither the host nor an env file can inject loader or interpreter hooks.
-`RAPUNZEL_ENV_FILE` passes through the same filter; dropped names are reported.
+`rapunzel` forwards only names on an allowlist: known provider keys, proxy variables, and the profile's own names, such as pi's `RAPUNZEL_*` provider settings or Claude Code's `CLAUDE_CODE_OAUTH_TOKEN`.
+A profile's names reach only that harness.
+A denylist (`LD_PRELOAD`, `NODE_OPTIONS`, `BASH_ENV`, `PATH`, `HOME`, the state-directory variable, and similar) wins over everything, so neither the host nor an env file can inject loader or interpreter hooks.
+The env file, `RAPUNZEL_ENV_FILE` or the default `~/.config/rapunzel/<harness>.env`, passes through the same filter; dropped names are reported.
+`TZ` is set from the host when it is a plain zone name.
 
 Secrets reach the container only at runtime, never through the image.
 How far they reach depends on the egress mode (section 4.5): in `open` and `allowlist` the agent holds the key it uses; in `strict` it holds a placeholder.
@@ -156,7 +170,9 @@ How far they reach depends on the egress mode (section 4.5): in `open` and `allo
 |---|---|---|
 | `open` (default) | yes | the internet through Docker's `bridge` network |
 | `allowlist` | yes | only allowlisted hosts over HTTPS |
-| `strict` | no, only a placeholder | only fixed provider routes on a credential gateway |
+| `strict` (pi, opencode) | no, only a placeholder | only fixed provider routes on a credential gateway |
+
+Both restricted modes also set the harness's offline switches, for example `PI_OFFLINE` or `DISABLE_AUTOUPDATER`, because vendor update and telemetry hosts are unreachable.
 
 **The network layer.**
 Both restricted modes create two networks per run.
@@ -177,20 +193,23 @@ The allowlist is built only from settings on the host:
 
 | Setting | Allowed host |
 |---|---|
+| Harness profile | its own model API (Claude Code: `api.anthropic.com`, dsh: `api.deepseek.com`) |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | `api.anthropic.com`, `api.openai.com` |
 | `RAPUNZEL_API_BASE_URL` | that URL's host |
 | `RAPUNZEL_EGRESS_LOGINS` | model API and token refresh hosts of named `/login` providers |
 | `RAPUNZEL_EGRESS_ALLOW` | listed hosts; `*.example.com` also matches `example.com` |
 | `RAPUNZEL_EGRESS_ALLOW_PRIVATE` | exact hosts that may resolve to private addresses, such as a model router on the LAN |
+| `rapunzel-ctl egress allow RUN_ID HOST` | an exact host for the rest of that run |
 
 It is never read from `auth.json` or anything else in the volume, because the agent can write there and would otherwise choose its own allowlist.
 
 **strict mode.**
 The sidecar is a Caddy reverse proxy that holds the real keys.
-The bootstrap points pi's providers at `http://llm-proxy:8080`, and the agent holds the placeholder `rapunzel-gateway`.
+pi's and opencode's bootstraps point their providers at `http://llm-proxy:8080`, and the agent holds the placeholder `rapunzel-gateway`.
 Caddy forwards only `/anthropic`, `/openai`, and `/custom` to fixed upstreams, always overwrites the auth headers with the real key, and answers everything else with 403.
 Overwriting rather than swapping a placeholder matters: it stops the agent from using an allowed provider with an attacker's key to send data out.
-OAuth logins cannot use this mode, because pi refreshes those tokens itself and keeps them in the volume.
+OAuth logins cannot use this mode, because the harness refreshes those tokens itself and keeps them in the volume.
+Claude Code, Codex, and dsh do not support `strict` yet, and the launcher refuses it for them.
 
 **Extension providers.**
 A provider can come from a pi extension that reads its own variables, for example `OMNIROUTE_BASE_URL` and `OMNIROUTE_API_KEY`.
@@ -221,22 +240,24 @@ The trade-off is deliberate: making the whole `.git` read-only would stop the ag
 
 - **Docker reachability.** All scripts check that the Docker engine responds before their first Docker call. If not, they print the original error, the active context or `DOCKER_HOST`, and how to start an engine or switch contexts.
 - **Terminal reset.** pi switches on the kitty keyboard protocol, mouse and focus reporting, and since version 1.0 a fullscreen alternate screen. If its own restore is lost, for example when the container is killed, the shell would receive keys as escape sequences. After every interactive session `rapunzel` pops the keyboard protocol stack, switches those modes off, and leaves the alternate screen.
-- **Releases.** Renovate tracks pi on npm. Patch updates merge on their own once CI passes; minor and major updates wait for review. The two sidecar images are pinned by digest and never merged automatically.
+- **Releases.** Renovate tracks pi, the other harness CLIs, the sidecar images, GitHub Action SHAs, and the base image. pi patch updates merge on their own after one day of release age once CI passes; pi minor and major updates wait for review. The other harness CLIs arrive as one weekly PR and the sidecar images as another, both reviewed by hand. The two sidecar images are pinned by digest and never merged automatically.
 
 ## 5 Verification
 
 | Script | What it proves | Network |
 |---|---|---|
-| `test.sh` | pi starts through the real entrypoint; the identity maps to `agent`; configuration is written; `HOME` is writable by the caller's UID; the platform's esbuild binary is present. | none |
+| `test.sh` | The harness (pi by default, any profile with `RAPUNZEL_HARNESS`) starts through the real entrypoint; the identity maps to `agent`; `HOME` and the state directory are writable by the caller's UID; the bootstrap writes its configuration without putting keys in the volume; pi's sessions stay in the volume and its TypeScript loader works after platform pruning. | none |
+| `test-control.sh` | Host only, no Docker: configuration inspection never starts Docker, the run registry is caller-owned and refuses symlinks, grant targets are validated, and blocked-event output is escaped and grouped correctly. | none |
 | `verify-isolation.sh` | The process is not root; `/workspace` and the volume are writable; host paths (`/Users`, `/Volumes`, host home, `~/.ssh`, `~/.pi`) are not visible; the mount table has no host home mount. | none |
 | `verify-host-files.sh` | Writing git hooks, git config, and `core.hooksPath` hooks fails; a commit still works; planted `.envrc`, editor tasks, and git attributes are reported. | none |
 | `verify-egress.sh strict` | No external DNS, direct IPv4/IPv6, metadata, or host access; the upstream is reachable only through the gateway; unknown routes get 403; the real key never reaches the agent; the agent's own credentials are replaced. | none |
 | `verify-egress.sh allowlist` | The same network checks; an allowed host works; other hosts, IP literals, a mismatched or missing SNI, plaintext tunnels, and plain HTTP are refused; private hosts need `RAPUNZEL_EGRESS_ALLOW_PRIVATE`. | internet |
+| `verify-control.sh` | Runtime grants through the real launcher and pinned Pipelock: allow and revoke take effect for new tunnels, SNI binding still holds after a policy change, concurrent operators keep each other's grants, a broken candidate is rejected before the live policy changes, a lost acknowledgement stops egress instead of reporting success, and the workload sees no policy state or Docker control channel. | internet |
 
 The egress probe runs inside the agent container through `rapunzel --exec`, so it tests the launcher's actual configuration rather than a copy of it.
 A listener on the host network serves as a canary: reaching it would mean the host is reachable.
 
-`ci.yml` runs all scripts on every pull request.
+`ci.yml` runs ShellCheck and every script on each pull request that changes more than documentation; it builds and smoke-tests the other harness images only when the `Dockerfile`, entrypoint, or profiles change.
 `publish-image.yml` calls the same workflow and publishes the multi-architecture image (`linux/amd64`, `linux/arm64`) only after it passes.
 
 Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 on macOS, and Docker Desktop 29 on macOS. Docker Desktop has a known problem with the read-only git mounts (section 8). WSL2 has not been tested yet.
@@ -256,7 +277,7 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 **Residual risks**, ranked:
 
 1. **Host-executed files outside git (high).** Changes to `.envrc`, editor tasks, or package scripts are reported, not blocked. A user who ignores the report and runs these tools is exposed.
-2. **Data sent through allowed hosts (high).** The agent can send anything it reads to the hosts it may reach, under the user's key. In `allowlist` mode it can also use an attacker's key on an allowed provider; `strict` mode prevents that. Every added host widens this channel. With a `/login` subscription, a leaked refresh token stays valid after the session.
+2. **Data sent through allowed hosts (high).** The agent can send anything it reads to the hosts it may reach, under the user's key. In `allowlist` mode it can also use an attacker's key on an allowed provider; `strict` mode prevents that. Every added host, including a runtime grant, widens this channel. With a `/login` subscription, a leaked refresh token stays valid after the session.
 3. **Encrypted Client Hello (medium, unverified).** With ECH, the outer SNI can name an allowed host while the inner one names another site on the same CDN. Pipelock has no ECH handling.
 4. **Agent-volume tampering (medium).** Extensions, settings, and trust decisions persist in the volume and run again in the next session.
 5. **Sidecar compromise (medium).** A compromised sidecar has full egress, limited to the internet by its per-run outbound network.
@@ -288,10 +309,13 @@ Tested platforms: Docker Engine 28 on Ubuntu (CI), Colima with Docker Engine 29 
 
 | Variable | Purpose |
 |---|---|
-| `RAPUNZEL_IMAGE` | Image to run (default `rapunzel`). |
+| `RAPUNZEL_HARNESS` | Harness profile (default `pi`); `--harness` or a `rapunzel-<harness>` link does the same. |
+| `RAPUNZEL_IMAGE` | Image to run (default: the profile's image, `rapunzel` for pi, `rapunzel:<harness>` otherwise). |
 | `RAPUNZEL_VOLUME` | Use a named volume instead of the per-project one. |
-| `RAPUNZEL_ENV_FILE` | Env file with provider settings and secrets; filtered by the allowlist. |
+| `RAPUNZEL_ENV_FILE` | Env file with provider settings and secrets; filtered by the allowlist (default `~/.config/rapunzel/<harness>.env` when it exists; empty for none). |
 | `RAPUNZEL_NETWORK` | Docker network for `open` mode (default `bridge`; `none` for offline). |
+| `RAPUNZEL_PORT` | Host port for a harness web UI on `127.0.0.1` (dsh, default 3080). |
+| `RAPUNZEL_RUNS_DIR` | Host-only run metadata for `rapunzel-ctl` (default `~/.local/state/rapunzel/runs`). |
 | `RAPUNZEL_EGRESS` | `open`, `allowlist`, or `strict`. |
 | `RAPUNZEL_EGRESS_ALLOW` | Extra hosts for `allowlist`. |
 | `RAPUNZEL_EGRESS_LOGINS` | `/login` providers for `allowlist`: `openai`, `openai-codex`, `anthropic`, `github-copilot`. |
@@ -311,11 +335,11 @@ The [guide](guide.md) explains each setting with examples.
 | `lib/egress.sh` | Per-run networks, Pipelock and Caddy sidecars, allowlist construction. |
 | `rapunzel-ctl`, `lib/control.{sh,jq}`, `lib/ctl-output.{sh,jq}`, `lib/runs.sh`, `lib/policy.sh` | Host-side run discovery, safe text/JSON, grouped history, shared startup policy, and confirmed runtime grants. |
 | `lib/host-files.sh` | Read-only git mounts, snapshots, and the change report. |
-| `lib/docker.sh` | Docker reachability check. |
-| `Dockerfile` | Image: shared base stage, then one final stage per harness (pi is the default). |
-| `bootstrap.sh`, `setup-identity.sh` | Entrypoint: identity, then the harness's bootstrap script. |
-| `profiles/<harness>/profile.sh`, `profiles/<harness>/bootstrap.mjs`, `lib/profile.sh` | Harness profile: command, state directory, environment names, bootstrap. Data only; the launcher enforces everything. |
+| `lib/docker.sh` | Docker reachability check and building a missing harness image. |
+| `Dockerfile`, `lib/prune-foreign-platforms.mjs` | Image: shared base stage, then one final stage per harness (pi is the default); foreign-platform binaries pruned in the install layer. |
+| `bootstrap.sh`, `setup-identity.sh`, `rapunzel-shell` | Entrypoint: identity, then the harness's bootstrap script, then the harness or a shell. |
+| `profiles/<harness>/profile.sh`, `profiles/<harness>/bootstrap.mjs`, `lib/profile.sh` | Harness profile: command, state directory, environment names, egress hosts, bootstrap. Data only; the launcher enforces everything. |
 | `rapunzel-ext` | Curated extensions from the host into a project's volume. |
-| `test.sh`, `verify-isolation.sh`, `verify-host-files.sh`, `verify-egress.sh`, `lib/egress-probe.mjs` | Checks. |
+| `test.sh`, `test-control.sh`, `verify-isolation.sh`, `verify-isolation-inner.sh`, `verify-host-files.sh`, `verify-egress.sh`, `verify-control.sh`, `lib/egress-probe.mjs` | Checks. |
 | `docs/egress.md` | Egress decision records and evidence. |
 | `docs/guide.md` | User guide. |
