@@ -1,0 +1,59 @@
+## MODIFIED Requirements
+
+### Requirement: Boundary checks
+
+The egress, host-file, and controller checks SHALL exercise the launcher's actual configuration through `rapunzel --exec` rather than a copy of it; `test.sh` and `verify-isolation.sh` run the image directly with equivalent user, capability, and mount options. Together the checks SHALL cover:
+
+| Script | Proves | Network |
+|---|---|---|
+| `test.sh` | The harness starts through the real entrypoint, the identity maps to `agent`, configuration is written, `HOME` is writable by the caller's UID, a TypeScript extension loads through pi's jiti loader | none |
+| `test-control.sh` | Config inspection never calls Docker and leaks no secret; registry ownership and symlink checks; grant and event host grammar; sanitized, grouped block events; prefix resolution; safe text and JSON rendering; log-read failures are errors; gateway routes render from the provider table with every credential header overwritten, `?key=` dropped, and no key in the Caddyfile; `.git` is mounted before its read-only parts and a symlinked git control path is refused | none, no Docker |
+| `verify-isolation.sh` | Not root; `/workspace` and the volume are writable; host paths are invisible; no host home mount | none |
+| `verify-host-files.sh` | Git hook/config/`core.hooksPath` writes fail; moving `.git` aside fails; a commit works; planted files are reported | none |
+| `verify-workspace.sh` | Clone mode has no host bind mount; host commits arrive as `origin/*` without touching agent branches; agent commits arrive on the host only under `refs/remotes/rapunzel-<harness>/*`; planted hooks, config, and tags stay in the workspace; host-executed paths in new commits are reported | none |
+| `verify-egress.sh strict` | No external DNS, direct IP, metadata, or host access; upstream only through the gateway; unknown routes 403; the real key never reaches the agent; the agent's own credentials are replaced | none |
+| `verify-egress.sh strict-tools` | Strict mode with `RAPUNZEL_EGRESS_ALLOW`: the same network checks; the listed host works through the tool proxy and others are refused; model traffic still goes only through the gateway with the real key outside the agent; `HTTP_PROXY` stays unset; an entry covering a provider host stops the launch | internet |
+| `verify-egress.sh allowlist` | The same network checks; allowed host works; other hosts, IP literals, wrong or missing SNI, plaintext tunnels, and plain HTTP are refused; a ClientHello with ECH is refused, or reported as the known gap while the pinned Pipelock cannot refuse it; private hosts need `RAPUNZEL_EGRESS_ALLOW_PRIVATE` | internet |
+| `verify-control.sh` | Grants and revocation through the real launcher and pinned Pipelock, TLS binding after reloads, concurrent operators, prefix collisions, log floods not displacing accepted-policy evidence, cleanup when stdout closes mid-transaction | internet |
+
+None of the checks SHALL need provider credentials. A listener on the host network serves as a canary for host reachability.
+
+#### Scenario: Host reachable from the internal network
+- **WHEN** a change makes the host canary reachable from a restricted-mode agent
+- **THEN** `verify-egress.sh` fails
+
+#### Scenario: Clone mode leaks a hook
+- **WHEN** a change lets a hook written in the workspace reach the host repository
+- **THEN** `verify-workspace.sh` fails
+
+#### Scenario: Git directory swapped in mount mode
+- **WHEN** a change lets the agent rename `.git` and plant a fresh one
+- **THEN** `verify-host-files.sh` fails
+
+#### Scenario: ECH forwarded with refusal available
+- **WHEN** the pinned Pipelock supports ECH refusal and the probe's ECH ClientHello reaches the upstream
+- **THEN** `verify-egress.sh allowlist` fails
+
+### Requirement: Image build hygiene
+
+The image SHALL install harness CLIs with `--ignore-scripts`, running only the one install script a harness needs to link its native binary. pi and its whole dependency tree SHALL install with `npm ci` from `profiles/pi/package-lock.json`. In the pi stage, `lib/prune-foreign-platforms.mjs` MUST run in the same `RUN` layer as that install and remove packages whose `os`/`cpu` exclude the build platform. Harness installs are root-owned and are updated by rebuilding, not by self-update.
+
+#### Scenario: Foreign esbuild binaries
+- **WHEN** the pi image is built on `linux/arm64`
+- **THEN** no `@esbuild/*` package for another platform remains in the image
+
+#### Scenario: Newly published dependency version
+- **WHEN** a transitive dependency of pi publishes a new version between two builds
+- **THEN** the second build installs the same locked version as the first
+
+### Requirement: Dependency update policy
+
+Renovate SHALL track the pinned pi version in `profiles/pi/package.json` and update its lockfile in the same PR, and SHALL track the other harness CLI versions, the sidecar image digests, GitHub Action SHAs, and the base image. pi patch updates MAY automerge after CI passes and at least one day of release age; pi minor and major updates, harness CLIs (one weekly group), and the sidecar images (one weekly group) MUST wait for review.
+
+#### Scenario: New pi patch release
+- **WHEN** pi publishes a patch release
+- **THEN** Renovate opens one PR that changes `profiles/pi/package.json`, `profiles/pi/package-lock.json`, and the version quoted in the guide
+
+#### Scenario: New Pipelock release
+- **WHEN** Pipelock publishes a new image
+- **THEN** Renovate opens a PR updating the tag and digest in `lib/egress.sh`, and it is never merged automatically
