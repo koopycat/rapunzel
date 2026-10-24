@@ -209,6 +209,10 @@ rapunzel handles this in two layers.
 **Prevention for git.**
 `.git/config`, `.git/hooks`, and a `core.hooksPath` directory inside the project (such as `.husky`) are mounted read-only on top of the project mount.
 The agent can still commit, branch, and stash; it cannot add a hook, set `core.fsmonitor`, or change `core.hooksPath`.
+`.git` itself is first bind-mounted onto its own path.
+Read-only sub-mounts move with their parent directory, so without this the agent could rename `.git` and create a new one with its own config and hooks, which the host's git would then use.
+A mount point cannot be renamed, so the rename fails.
+A symlinked `.git/config` or `.git/hooks` would dangle inside the container and could be replaced there, so the launcher refuses to start instead.
 Linked worktrees and submodules keep their git directory outside the project, so it is not mounted at all.
 
 **Detection for everything else.**
@@ -229,7 +233,7 @@ The trade-off is deliberate: making the whole `.git` read-only would stop the ag
 |---|---|---|
 | `test.sh` | pi starts through the real entrypoint; the identity maps to `agent`; configuration is written; `HOME` is writable by the caller's UID; the platform's esbuild binary is present. | none |
 | `verify-isolation.sh` | The process is not root; `/workspace` and the volume are writable; host paths (`/Users`, `/Volumes`, host home, `~/.ssh`, `~/.pi`) are not visible; the mount table has no host home mount. | none |
-| `verify-host-files.sh` | Writing git hooks, git config, and `core.hooksPath` hooks fails; a commit still works; planted `.envrc`, editor tasks, and git attributes are reported. | none |
+| `verify-host-files.sh` | Writing git hooks, git config, and `core.hooksPath` hooks fails; moving `.git` aside fails; a commit still works; planted `.envrc`, editor tasks, and git attributes are reported. | none |
 | `verify-egress.sh strict` | No external DNS, direct IPv4/IPv6, metadata, or host access; the upstream is reachable only through the gateway; unknown routes get 403; the real key never reaches the agent; the agent's own credentials are replaced. | none |
 | `verify-egress.sh allowlist` | The same network checks; an allowed host works; other hosts, IP literals, a mismatched or missing SNI, plaintext tunnels, and plain HTTP are refused; private hosts need `RAPUNZEL_EGRESS_ALLOW_PRIVATE`. | internet |
 

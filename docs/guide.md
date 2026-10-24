@@ -334,6 +334,7 @@ Each normal `rapunzel` run has exactly these intentional host mounts:
 
 ```text
 PROJECT_DIR (read-write)            -> /workspace
+PROJECT_DIR/.git (read-write)       -> /workspace/.git (pinned, cannot be moved)
 PROJECT_DIR/.git/config (read-only) -> /workspace/.git/config
 PROJECT_DIR/.git/hooks (read-only)  -> /workspace/.git/hooks
 in-project core.hooksPath (read-only, if set, e.g. .husky)
@@ -366,7 +367,7 @@ A planted file like that runs outside the container the next time you use git, e
 
 `rapunzel` limits this in two ways:
 
-- **Read-only git control files.** `.git/config`, `.git/hooks`, and a `core.hooksPath` directory inside the project (such as `.husky`) are mounted read-only. pi can still commit, branch, and stash, but cannot add hooks or change what git runs. Commands that write the repository config, such as `git config` or `git push -u`, fail inside the container. If `.git/hooks` does not exist, `rapunzel` creates it on the host first, so it can be mounted.
+- **Read-only git control files.** `.git/config`, `.git/hooks`, and a `core.hooksPath` directory inside the project (such as `.husky`) are mounted read-only. pi can still commit, branch, and stash, but cannot add hooks or change what git runs. Commands that write the repository config, such as `git config` or `git push -u`, fail inside the container. If `.git/hooks` does not exist, `rapunzel` creates it on the host first, so it can be mounted. `.git` itself is mounted onto its own path, which makes it a mount point that cannot be renamed: otherwise pi could move `.git` aside, together with its read-only parts, and leave a fresh `.git` with its own config and hooks for the host's git. If `.git/config` or `.git/hooks` is a symlink, `rapunzel` refuses to start, because a symlink cannot be protected this way.
 - **A change report.** Before pi starts, `rapunzel` records hashes of files the host commonly runs; when pi exits, it lists every one that was added, modified, or removed:
 
   ```text
