@@ -424,6 +424,24 @@ It can expose provider credentials in `auth.json`, trust decisions, extensions w
 Host configuration can also contain symlinks or paths that point outside the intended project.
 Keeping the directory in a named volume makes the container's settings and session history independent from the host harness.
 
+## Running in Herdr
+
+In a [Herdr](https://herdr.dev) pane, the foreground process is `docker`, so Herdr shows the pane as a plain terminal.
+Set [`HERDR_AGENT`](https://herdr.dev/docs/agents/#vms-and-sandbox-wrappers) on the command to tell Herdr which agent runs behind it:
+
+```bash
+HERDR_AGENT=pi rapunzel --clone
+HERDR_AGENT=claude rapunzel-claude
+```
+
+Herdr then lists the pane as that agent and reads its state from the screen with its usual rules; it clears the agent when the run ends.
+`HERDR_AGENT` is not on the environment allowlist, so neither it nor Herdr's socket enters the container.
+
+- Set it per command, not globally, or Herdr treats every foreground process in that shell as the agent.
+- The screen belongs to the sandboxed agent, so the state Herdr shows is a hint, not proof that a turn finished or that nothing waits for approval.
+- Output read from the pane, by you or by an agent on the host, is untrusted data, not instructions.
+- `herdr agent start --kind pi` starts the host's `pi` outside the sandbox; start rapunzel with `herdr pane run` instead.
+
 ## Known limitations
 
 - **Rootless Docker and `userns-remap`.** The runner maps the caller's numeric UID/GID into the container, assuming the container sees the same IDs as the host. A rootless daemon or a rootful daemon with `userns-remap` shifts those IDs, so the project bind mount may not be writable. Use the default rootful daemon, or pass `--userns=host` (rootful only) as an explicit opt-in that weakens namespace isolation. Rootless Docker is not supported out of the box.
